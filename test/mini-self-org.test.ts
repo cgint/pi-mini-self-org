@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import miniSelfOrg, { emptySnapshot } from "../src/mini-self-org.js";
 
@@ -75,6 +76,22 @@ describe("miniSelfOrg", () => {
     const component = tool.renderResult(cleared, {}, {}, {});
     expect(component.invalidate).toEqual(expect.any(Function));
     expect(component.render(80)).toEqual(["Cleared — no context will be injected."]);
+  });
+
+  it("truncates every structural render line to the supplied width", async () => {
+    const { tool } = setup();
+    const width = 12;
+    const updated = await tool.execute("id", {
+      goal: "An overlong goal that must fit the terminal",
+      nextActions: ["An overlong list item that must fit the terminal"],
+      blockers: [],
+      notes: [],
+    });
+    const cleared = await tool.execute("id", emptySnapshot());
+
+    for (const component of [tool.renderResult(updated, {}, {}, {}), tool.renderResult(cleared, {}, {}, {})]) {
+      expect(component.render(width).every((line: string) => visibleWidth(line) <= width)).toBe(true);
+    }
   });
 
   it("reconstructs the last valid snapshot from legacy and current tool results", async () => {

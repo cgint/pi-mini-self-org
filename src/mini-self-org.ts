@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const WORKPAD_CUSTOM_TYPE = "mini-self-org-workpad";
@@ -93,16 +94,20 @@ interface StructuralComponent {
   invalidate(): void;
 }
 
+function truncateLines(lines: string[], width: number): string[] {
+  return lines.map((line) => (width > 0 && visibleWidth(line) <= width ? line : truncateToWidth(line, width)));
+}
+
 function renderSnapshot(snapshot: WorkpadSnapshot): StructuralComponent {
   return {
-    render: (_width) => ["Updated — active until replaced or cleared", "", ...formatFields(snapshot).split("\n")],
+    render: (width) => truncateLines(["Updated — active until replaced or cleared", "", ...formatFields(snapshot).split("\n")], width),
     invalidate: () => {},
   };
 }
 
 function renderCleared(): StructuralComponent {
   return {
-    render: (_width) => ["Cleared — no context will be injected."],
+    render: (width) => truncateLines(["Cleared — no context will be injected."], width),
     invalidate: () => {},
   };
 }
