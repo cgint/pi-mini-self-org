@@ -37,9 +37,13 @@ describe("miniSelfOrg", () => {
     expect((pi as any).getFlag).toHaveBeenCalledWith("mini-self-org-force");
     expect(tool.name).toBe(TOOL_NAME);
     expect(tool.label).toBe("Mini self-org workpad");
+    expect(tool.description).toContain("mini-self-org-workpad");
+    expect(tool.description).toMatch(/workpad alone is not registered and must never be called as a tool/i);
+    expect(tool.description).toContain('{ goal: "…", nextActions: ["…"], blockers: [], notes: [] }');
+    expect(tool.description).toContain("lists are arrays, not JSON-encoded strings");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale")]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i)]));
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
 
@@ -63,6 +67,8 @@ describe("miniSelfOrg", () => {
 
     const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
     expect(rejected.isError).toBe(true);
+    const jsonEncodedLists = await tool.execute("id", { ...valid, nextActions: '["Test"]', blockers: "[]", notes: "[]" });
+    expect(jsonEncodedLists.isError).toBe(true);
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
     expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small", "info");
@@ -122,19 +128,24 @@ describe("miniSelfOrg", () => {
       role: "custom",
       customType: TOOL_NAME,
       display: false,
-      content: "Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared.\n\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small",
+      content: "Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. The only callable tool name is mini-self-org-workpad; workpad alone is not registered and must never be called as a tool.\n\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small",
     });
-    expect(result.messages[1].content.match(/workpad/g)).toHaveLength(1);
+    expect(result.messages[1].content).toContain("mini-self-org-workpad");
+    expect(result.messages[1].content).toMatch(/workpad alone is not registered and must never be called as a tool/i);
   });
 
   it("starts force mode from the flag and recognizes the current tool name", async () => {
     const { handlers } = setup(true);
     const blocked = await handlers.get("tool_call")?.({ toolName: "read" }, context());
-    expect(blocked).toEqual({ block: true, reason: expect.stringContaining("workpad alone first") });
+    expect(blocked).toEqual({ block: true, reason: expect.stringContaining("mini-self-org-workpad alone first") });
+    expect(blocked.reason).toContain("mini-self-org-workpad");
+    expect(blocked.reason).toMatch(/workpad alone is not registered and must never be called as a tool/i);
     expect(await handlers.get("tool_call")?.({ toolName: TOOL_NAME }, context())).toBeUndefined();
     expect(await handlers.get("tool_call")?.({ toolName: "workpad" }, context())).toMatchObject({ block: true });
     const guidance = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, context());
     expect(guidance.systemPrompt).toContain("gate applies to tool use");
+    expect(guidance.systemPrompt).toContain("mini-self-org-workpad");
+    expect(guidance.systemPrompt).toMatch(/workpad alone is not registered and must never be called as a tool/i);
     expect(guidance.systemPrompt).toMatch(/text-only responses cannot be mechanically blocked/i);
   });
 

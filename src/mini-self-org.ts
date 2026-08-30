@@ -7,9 +7,10 @@ const WORKPAD_TOOL_NAME = "mini-self-org-workpad";
 const LEGACY_WORKPAD_TOOL_NAME = "workpad";
 const MAX_GOAL_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
-const FORCE_MODE_GUIDANCE = "Mini self-org force mode is on: this gate applies to tool use. A successful workpad refresh is due before any non-workpad tool call; call workpad alone first, then make later action calls. Text-only responses cannot be mechanically blocked by Pi's supported API.";
-const FORCE_MODE_BLOCK_REASON = "Mini self-org force mode requires a successful workpad refresh before other tools. Call workpad alone first, then make the action call in a later response.";
-const STALE_STATE_GUIDANCE = "When you determine the current workpad no longer reflects material evidence, goal, next actions, blockers, or notes, replace the complete snapshot before the next consequential tool/action batch. Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.";
+const TOOL_NAME_GUIDANCE = "The only callable tool name is mini-self-org-workpad; workpad alone is not registered and must never be called as a tool.";
+const FORCE_MODE_GUIDANCE = `Mini self-org force mode is on: this gate applies to tool use. A successful mini-self-org-workpad update is due before any other tool call; call mini-self-org-workpad alone first, then make later action calls. ${TOOL_NAME_GUIDANCE} Text-only responses cannot be mechanically blocked by Pi's supported API.`;
+const FORCE_MODE_BLOCK_REASON = `Mini self-org force mode requires a successful mini-self-org-workpad update before other tools. Call mini-self-org-workpad alone first, then make the action call in a later response. ${TOOL_NAME_GUIDANCE}`;
+const STALE_STATE_GUIDANCE = `When you determine the current workpad no longer reflects material evidence, goal, next actions, blockers, or notes, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
 export interface WorkpadSnapshot {
   goal: string | null;
@@ -86,7 +87,7 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
 }
 
 function contextMessage(snapshot: WorkpadSnapshot): string {
-  return `Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared.\n\n${formatFields(snapshot)}`;
+  return `Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. ${TOOL_NAME_GUIDANCE}\n\n${formatFields(snapshot)}`;
 }
 
 interface StructuralComponent {
@@ -115,7 +116,7 @@ function renderCleared(): StructuralComponent {
 /** Registers the session-local workpad tool and its read-only command. */
 export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerFlag("mini-self-org-force", {
-    description: "Require a successful workpad refresh before non-workpad tool calls.",
+    description: "Require a successful mini-self-org-workpad update before other tool calls.",
     type: "boolean",
     default: false,
   });
@@ -138,7 +139,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `Use this workpad proactively throughout substantive work. Start it when beginning work that may develop beyond a single direct response; replace the complete snapshot whenever the goal, next actions, blockers, or notes change. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
+    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { goal: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. Replace the complete snapshot whenever the goal, next actions, blockers, or notes change. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
     promptGuidelines: [STALE_STATE_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
@@ -165,11 +166,11 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     },
   });
   pi.registerCommand("mini-self-org-force-on", {
-    description: "Require a workpad refresh before non-workpad tool calls for this session.",
+    description: "Require a mini-self-org-workpad update before other tool calls for this session.",
     handler: async (_args, ctx) => setForceMode(true, ctx),
   });
   pi.registerCommand("mini-self-org-force-off", {
-    description: "Stop requiring workpad refreshes before tool calls for this session.",
+    description: "Stop requiring mini-self-org-workpad updates before tool calls for this session.",
     handler: async (_args, ctx) => setForceMode(false, ctx),
   });
 

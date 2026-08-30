@@ -18,9 +18,11 @@ It is not project memory, durable cross-session planning or task tracking, or an
 
 Use the workpad at meaningful state boundaries. If it becomes stale, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
 
+**Exact tool name:** Call `mini-self-org-workpad` only. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
+
 The model receives one request-local, non-authoritative current block until it is replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
-Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery; no old alias is registered.
+Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery; this does not create a callable legacy alias.
 
 ## Session and privacy boundary
 
