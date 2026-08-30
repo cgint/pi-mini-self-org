@@ -1,7 +1,7 @@
 {
   "name": "pi-mini-self-org",
   "version": "0.1.0",
-  "description": "Minimal scaffold for a future session-local Pi organizer extension.",
+  "description": "Bounded session-local Pi workpad extension.",
   "license": "MIT",
   "repository": {
     "type": "git",
