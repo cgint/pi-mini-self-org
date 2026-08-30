@@ -1,0 +1,13 @@
+node_modules/
+.pi/
+.env
+.env.*
+.DS_Store
+coverage/
+dist/
+build/
+*.log
+*.jsonl
+.herdr-*-report.md
+
+.codegiant/

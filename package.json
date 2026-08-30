@@ -1,0 +1,49 @@
+{
+  "name": "pi-mini-self-org",
+  "version": "0.1.0",
+  "description": "Minimal scaffold for a future session-local Pi organizer extension.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cgint/pi-mini-self-org.git"
+  },
+  "author": "cgint",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "extension",
+    "organization"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@sinclair/typebox": "^0.34.52"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "precommit": "tsc --noEmit && npm run test && npm audit --audit-level=moderate"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@sinclair/typebox": "^0.34.52",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
