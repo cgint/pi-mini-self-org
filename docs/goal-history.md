@@ -1,6 +1,6 @@
 # Goal-history for the workpad — findings & proposal
 
-Status: **v1 implemented** (2026-08-31): read-only `mini-self-org-history` tool + `/mini-self-org-history` TUI command + force-gate exemption, **no snapshot IDs, no `restore`** — those are deferred (design v2 retained below as deferred material). TDD-first: 18/18 tests green, `tsc --noEmit` clean, README updated.
+Status: **v1 implemented** (2026-08-31): read-only `mini-self-org-history` tool + `/mini-self-org-history` TUI command, **no snapshot IDs, no `restore`** — those are deferred (design v2 retained below as deferred material). The force-mode gate was removed as unused (2026-08-31); re-add only with usage evidence. TDD-first: 15/15 tests green, `tsc --noEmit` clean, README updated.
 
 ## Conclusion
 
@@ -53,9 +53,9 @@ Key facts:
 
 Availability ≠ use. Add to `promptGuidelines`: call it *before clearing the pad or starting a "new" goal* (verify the parent thread is actually done), *after context compaction*, and *after long interruptions*.
 
-### Force-mode interaction
+### Force-mode interaction (removed)
 
-Proposed: a history call is **exempt from the gate** — it is read-only re-orientation, exactly what you want available mid-drift without a forced workpad cycle. This is a deliberate exemption decision to make explicit in code/docs.
+The planned history exemption went with the gate itself: the force-mode feature was never used, adds complexity, and was removed 2026-08-31 by user vote. Re-add only with real usage evidence — its update-act-update-act re-arm rhythm also contradicts the "meaningful state boundaries" doctrine.
 
 ### TUI
 
@@ -135,7 +135,7 @@ Focus history (branch-local, newest last) — 5 of 33, non-authoritative:
 **v1 (minimal, purely additive — zero changes to the existing write path):**
 
 1. TDD: `reconstructHistory(ctx, limit?)` returning distinct snapshots with change markers (unit tests on synthetic branches, including legacy + cleared entries + dedupe). No IDs.
-2. Register `mini-self-org-history` tool (read-only, capped, non-authoritative) + re-orientation prompt guidance + force-mode exemption (allow the history tool call in the `tool_call` gate; a history `tool_result` must NOT clear `workpadDue` — read-only, so the update stays due).
+2. Register `mini-self-org-history` tool (read-only, capped, non-authoritative) + re-orientation prompt guidance.
 3. Add `/mini-self-org-history` TUI command (shared reconstruction).
 
 **v1.1 (small, no IDs needed — do once v1 is in practice):**

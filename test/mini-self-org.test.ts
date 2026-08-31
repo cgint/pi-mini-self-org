@@ -7,7 +7,7 @@ import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory } fr
 const TOOL_NAME = "mini-self-org-workpad";
 type Handler = (event: any, ctx: any) => Promise<any>;
 
-function setup(force = false) {
+function setup() {
   const handlers = new Map<string, Handler>();
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
@@ -15,8 +15,6 @@ function setup(force = false) {
     on: vi.fn((name: string, handler: Handler) => handlers.set(name, handler)),
     registerTool: vi.fn((definition) => tools.set(definition.name, definition)),
     registerCommand: vi.fn((name, definition) => commands.set(name, { name, ...definition })),
-    registerFlag: vi.fn(),
-    getFlag: vi.fn(() => force),
   } as unknown as ExtensionAPI;
   miniSelfOrg(pi);
   return { handlers, tool: tools.get(TOOL_NAME), tools, commands, pi };
@@ -28,14 +26,10 @@ const workpadEntry = (toolName: string, snapshot: unknown, timestamp = 0) => ({
   message: { role: "toolResult", toolName, details: { snapshot }, timestamp },
 });
 const valid = { goal: " Ship ", nextActions: [" Test "], blockers: [], notes: [" Keep small "] };
-const workpadResult = (details: unknown, isError = false) => ({ toolName: TOOL_NAME, details, isError });
-const actionResult = () => ({ toolName: "read", details: undefined, isError: false });
 
 describe("miniSelfOrg", () => {
   it("registers the renamed tool and stale-state guidance", () => {
-    const { pi, tool, commands } = setup();
-    expect((pi as any).registerFlag).toHaveBeenCalledWith("mini-self-org-force", expect.objectContaining({ type: "boolean", default: false }));
-    expect((pi as any).getFlag).toHaveBeenCalledWith("mini-self-org-force");
+    const { tool, commands } = setup();
     expect(tool.name).toBe(TOOL_NAME);
     expect(tool.label).toBe("Mini self-org workpad");
     expect(tool.description).toContain("mini-self-org-workpad");
@@ -135,37 +129,6 @@ describe("miniSelfOrg", () => {
     expect(result.messages[1].content).toMatch(/workpad alone is not registered and must never be called as a tool/i);
   });
 
-  it("starts force mode from the flag and recognizes the current tool name", async () => {
-    const { handlers } = setup(true);
-    const blocked = await handlers.get("tool_call")?.({ toolName: "read" }, context());
-    expect(blocked).toEqual({ block: true, reason: expect.stringContaining("mini-self-org-workpad alone first") });
-    expect(blocked.reason).toContain("mini-self-org-workpad");
-    expect(blocked.reason).toMatch(/workpad alone is not registered and must never be called as a tool/i);
-    expect(await handlers.get("tool_call")?.({ toolName: TOOL_NAME }, context())).toBeUndefined();
-    expect(await handlers.get("tool_call")?.({ toolName: "workpad" }, context())).toMatchObject({ block: true });
-    const guidance = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, context());
-    expect(guidance.systemPrompt).toContain("gate applies to tool use");
-    expect(guidance.systemPrompt).toContain("mini-self-org-workpad");
-    expect(guidance.systemPrompt).toMatch(/workpad alone is not registered and must never be called as a tool/i);
-    expect(guidance.systemPrompt).toMatch(/text-only responses cannot be mechanically blocked/i);
-  });
-
-  it("clears only after a valid successful current-tool result and makes it due after actions", async () => {
-    const { handlers } = setup(true);
-    const toolCall = handlers.get("tool_call")!;
-    const toolResult = handlers.get("tool_result")!;
-    expect(await toolCall({ toolName: "read" }, context())).toMatchObject({ block: true });
-    expect(await toolCall({ toolName: TOOL_NAME }, context())).toBeUndefined();
-    // Sibling calls are preflighted before the workpad result event, so this action remains blocked.
-    expect(await toolCall({ toolName: "read" }, context())).toMatchObject({ block: true });
-    await toolResult(workpadResult({}, true), context());
-    expect(await toolCall({ toolName: "read" }, context())).toMatchObject({ block: true });
-    await toolResult(workpadResult({ snapshot: valid }), context());
-    expect(await toolCall({ toolName: "read" }, context())).toBeUndefined();
-    await toolResult(actionResult(), context());
-    expect(await toolCall({ toolName: "read" }, context())).toMatchObject({ block: true });
-  });
-
   it("reconstructs focus history: forward walk, dedupe, change markers, cleared entries", () => {
     const A = { goal: "Ship", nextActions: ["a1"], blockers: [], notes: [] };
     const B = { goal: "Ship", nextActions: ["a2"], blockers: ["b"], notes: [] };
@@ -229,7 +192,6 @@ describe("miniSelfOrg", () => {
     expect(history.description).toContain("before clearing");
     expect(history.description).toContain("before starting a \"new\" goal");
     expect(history.description).toContain("cascade into sub-tasks");
-    expect(history.description).toContain("even while a workpad update is due");
     expect(history.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("after context compaction")]));
     expect(history.parameters.properties.limit.description).toContain("1-15");
     expect(tool.description).toContain("read via mini-self-org-history");
@@ -261,17 +223,6 @@ describe("miniSelfOrg", () => {
     expect(update.details.snapshot).toEqual({ goal: "Ship", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
   });
 
-  it("exempts history from the force gate without clearing the due workpad", async () => {
-    const { handlers } = setup(true);
-    const toolCall = handlers.get("tool_call")!;
-    const toolResult = handlers.get("tool_result")!;
-    expect(await toolCall({ toolName: "mini-self-org-history" }, context())).toBeUndefined();
-    expect(await toolResult({ toolName: "mini-self-org-history", details: undefined, isError: false }, context())).toBeUndefined();
-    expect(await toolCall({ toolName: "read" }, context())).toMatchObject({ block: true });
-    await toolResult(workpadResult({ snapshot: valid }), context());
-    expect(await toolCall({ toolName: "read" }, context())).toBeUndefined();
-  });
-
   it("notifies the focused branch history from the /mini-self-org-history command", async () => {
     const { commands } = setup();
     const entries = [workpadEntry("workpad", { goal: "Command goal", nextActions: [], blockers: [], notes: [] })];
@@ -282,14 +233,4 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[0][1]).toBe("info");
   });
 
-  it("toggles force mode for the session and force-off never blocks", async () => {
-    const { handlers, commands } = setup();
-    const notify = vi.fn();
-    await commands.get("mini-self-org-force-on").handler("", { ui: { notify } });
-    expect(notify).toHaveBeenLastCalledWith("Mini self-org force mode on; a workpad refresh is due.", "info");
-    expect(await handlers.get("tool_call")?.({ toolName: "read" }, context())).toMatchObject({ block: true });
-    await commands.get("mini-self-org-force-off").handler("", { ui: { notify } });
-    expect(notify).toHaveBeenLastCalledWith("Mini self-org force mode off; tool calls are not blocked.", "info");
-    expect(await handlers.get("tool_call")?.({ toolName: "read" }, context())).toBeUndefined();
-  });
 });

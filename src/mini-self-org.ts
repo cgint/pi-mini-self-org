@@ -11,9 +11,7 @@ const HISTORY_MAX_LIMIT = 15;
 const MAX_GOAL_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
 const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
-const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal. It is read-only and non-authoritative: it shows this branch's focus history (past workpad snapshots), never replaces a mini-self-org-workpad update, and never satisfies the force-mode gate.`;
-const FORCE_MODE_GUIDANCE = `Mini self-org force mode is on: this gate applies to tool use. A successful mini-self-org-workpad update is due before any other tool call; call mini-self-org-workpad alone first, then make later action calls. ${TOOL_NAME_GUIDANCE} Text-only responses cannot be mechanically blocked by Pi's supported API.`;
-const FORCE_MODE_BLOCK_REASON = `Mini self-org force mode requires a successful mini-self-org-workpad update before other tools. Call mini-self-org-workpad alone first, then make the action call in a later response. ${TOOL_NAME_GUIDANCE}`;
+const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal. It is read-only and non-authoritative: it shows this branch's focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When you determine the current workpad no longer reflects material evidence, goal, next actions, blockers, or notes, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
 export interface WorkpadSnapshot {
@@ -209,24 +207,10 @@ function renderCleared(): StructuralComponent {
 
 /** Registers the session-local workpad tool and its read-only command. */
 export default function miniSelfOrg(pi: ExtensionAPI): void {
-  pi.registerFlag("mini-self-org-force", {
-    description: "Require a successful mini-self-org-workpad update before other tool calls.",
-    type: "boolean",
-    default: false,
-  });
-
-  let forceMode = pi.getFlag("mini-self-org-force") === true;
-  let workpadDue = forceMode;
   let snapshot = emptySnapshot();
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
   };
-  const setForceMode = (enabled: boolean, ctx: { ui: { notify(message: string, type?: "info" | "warning" | "error"): void } }) => {
-    forceMode = enabled;
-    workpadDue = enabled;
-    ctx.ui.notify(`Mini self-org force mode ${enabled ? "on; a workpad refresh is due." : "off; tool calls are not blocked."}`, "info");
-  };
-
   pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
   pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
 
@@ -256,7 +240,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof HistoryParameters, Record<string, never>>({
     name: HISTORY_TOOL_NAME,
     label: "Mini self-org focus history",
-    description: `Read the session-local focus history: a bounded, newest-last timeline of this branch's past mini-self-org-workpad snapshots (timestamps, which fields changed, cleared states). A non-authoritative memory aid — not task tracking, and never a replacement for re-deriving from evidence. The goal field tends to cascade into sub-tasks over time; the history is how you find what the broader or parent goal was. Call it deliberately: after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal, to re-orient to the top-level goal. Read-only: it performs no writes. It is exempt from the force-mode gate: you may call it even while a workpad update is due — that update remains required before other actions.`,
+    description: `Read the session-local focus history: a bounded, newest-last timeline of this branch's past mini-self-org-workpad snapshots (timestamps, which fields changed, cleared states). A non-authoritative memory aid — not task tracking, and never a replacement for re-deriving from evidence. The goal field tends to cascade into sub-tasks over time; the history is how you find what the broader or parent goal was. Call it deliberately: after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal, to re-orient to the top-level goal. Read-only: it performs no writes.`,
     promptGuidelines: [HISTORY_USAGE_GUIDANCE],
     parameters: HistoryParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -277,40 +261,6 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       ctx.ui.notify(formatFocusHistory(reconstructHistory(ctx)), "info");
     },
   });
-  pi.registerCommand("mini-self-org-force-on", {
-    description: "Require a mini-self-org-workpad update before other tool calls for this session.",
-    handler: async (_args, ctx) => setForceMode(true, ctx),
-  });
-  pi.registerCommand("mini-self-org-force-off", {
-    description: "Stop requiring mini-self-org-workpad updates before tool calls for this session.",
-    handler: async (_args, ctx) => setForceMode(false, ctx),
-  });
-
-  pi.on("before_agent_start", async (event) => {
-    if (!forceMode) return undefined;
-    workpadDue = true;
-    return { systemPrompt: `${event.systemPrompt}\n\n${FORCE_MODE_GUIDANCE}` };
-  });
-
-  pi.on("tool_call", async (event) => {
-    if (forceMode && workpadDue && event.toolName !== WORKPAD_TOOL_NAME && event.toolName !== HISTORY_TOOL_NAME) {
-      return { block: true, reason: FORCE_MODE_BLOCK_REASON };
-    }
-    return undefined;
-  });
-
-  pi.on("tool_result", async (event) => {
-    if (!forceMode) return undefined;
-    if (event.toolName !== WORKPAD_TOOL_NAME) {
-      workpadDue = true;
-      return undefined;
-    }
-    if (!event.isError && sanitizeSnapshot((event.details as WorkpadDetails | undefined)?.snapshot)) {
-      workpadDue = false;
-    }
-    return undefined;
-  });
-
   // Before each LLM call, inject a final transient, non-authoritative workpad block; it is request-local, not persisted in custom session history.
   pi.on("context", async (event) => {
     const messages = event.messages.filter(

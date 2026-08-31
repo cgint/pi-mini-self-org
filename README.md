@@ -30,18 +30,10 @@ Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots 
 
 Snapshots are stored in Pi session tool-result details for active-branch recovery. They are session-local state, not external storage or shared project memory. Treat workpad content as session content and avoid placing secrets or unnecessary personal data in it. The focus history view is derived from these same details at read time — it adds no new storage.
 
-## Optional force mode
-
-Start Pi with `--mini-self-org-force`, or use `/mini-self-org-force-on` and `/mini-self-org-force-off`. Force mode is off by default.
-
-When enabled, it gates tool calls: a standalone successful current workpad result is required before another tool call. It cannot mechanically block text-only replies. Pi preflights sibling action calls, so a workpad call and action calls in the same batch leave the action siblings blocked. Read-only `mini-self-org-history` calls are exempt from the gate, but a history result never satisfies the due workpad update.
-
 ## Commands
 
 - `/mini-self-org` — read-only view of the current workpad.
 - `/mini-self-org-history` — read-only view of the branch's focus history (past workpad snapshots).
-- `/mini-self-org-force-on` — enable the session-local tool gate.
-- `/mini-self-org-force-off` — disable the session-local tool gate.
 
 ## Development
 
