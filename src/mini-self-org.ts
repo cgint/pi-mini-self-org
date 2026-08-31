@@ -5,9 +5,13 @@ import { Type } from "@sinclair/typebox";
 const WORKPAD_CUSTOM_TYPE = "mini-self-org-workpad";
 const WORKPAD_TOOL_NAME = "mini-self-org-workpad";
 const LEGACY_WORKPAD_TOOL_NAME = "workpad";
+const HISTORY_TOOL_NAME = "mini-self-org-history";
+const HISTORY_DEFAULT_LIMIT = 10;
+const HISTORY_MAX_LIMIT = 15;
 const MAX_GOAL_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
-const TOOL_NAME_GUIDANCE = "The only callable tool name is mini-self-org-workpad; workpad alone is not registered and must never be called as a tool.";
+const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
+const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal. It is read-only and non-authoritative: it shows this branch's focus history (past workpad snapshots), never replaces a mini-self-org-workpad update, and never satisfies the force-mode gate.`;
 const FORCE_MODE_GUIDANCE = `Mini self-org force mode is on: this gate applies to tool use. A successful mini-self-org-workpad update is due before any other tool call; call mini-self-org-workpad alone first, then make later action calls. ${TOOL_NAME_GUIDANCE} Text-only responses cannot be mechanically blocked by Pi's supported API.`;
 const FORCE_MODE_BLOCK_REASON = `Mini self-org force mode requires a successful mini-self-org-workpad update before other tools. Call mini-self-org-workpad alone first, then make the action call in a later response. ${TOOL_NAME_GUIDANCE}`;
 const STALE_STATE_GUIDANCE = `When you determine the current workpad no longer reflects material evidence, goal, next actions, blockers, or notes, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.`;
@@ -28,6 +32,10 @@ export const WorkpadParameters = Type.Object({
   nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 3 }),
   blockers: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 2 }),
   notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 3 }),
+});
+
+export const HistoryParameters = Type.Object({
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: HISTORY_MAX_LIMIT, description: "Number of recent entries to show (1-15, default 10)." })),
 });
 
 export const emptySnapshot = (): WorkpadSnapshot => ({ goal: null, nextActions: [], blockers: [], notes: [] });
@@ -56,16 +64,102 @@ export function sanitizeSnapshot(value: unknown): WorkpadSnapshot | undefined {
   return { goal, nextActions, blockers, notes };
 }
 
-export function reconstructSnapshot(ctx: ExtensionContext): WorkpadSnapshot {
+/** Minimal read-only branch access needed by reconstruction; avoids coupling to the full ExtensionContext. */
+export interface BranchSource {
+  sessionManager: {
+    getBranch(): readonly unknown[];
+  };
+}
+
+interface WorkpadResultEntry {
+  type?: string;
+  message?: {
+    role?: string;
+    toolName?: string;
+    timestamp?: number;
+    details?: { snapshot?: unknown };
+  };
+}
+
+export function reconstructSnapshot(ctx: BranchSource): WorkpadSnapshot {
   const branch = ctx.sessionManager.getBranch();
   for (let index = branch.length - 1; index >= 0; index -= 1) {
-    const entry = branch[index];
-    if (entry?.type !== "message" || entry.message.role !== "toolResult" || ![WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME].includes(entry.message.toolName)) continue;
-    const details = entry.message.details as { snapshot?: unknown } | undefined;
-    const snapshot = sanitizeSnapshot(details?.snapshot);
+    const entry = branch[index] as WorkpadResultEntry | undefined;
+    if (entry?.type !== "message") continue;
+    const message = entry.message;
+    if (message?.role !== "toolResult" || ![WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME].includes(message.toolName ?? "")) continue;
+    const snapshot = sanitizeSnapshot(message.details?.snapshot);
     if (snapshot) return snapshot;
   }
   return emptySnapshot();
+}
+
+export type WorkpadField = keyof WorkpadSnapshot;
+
+export interface FocusHistoryEntry {
+  timestamp: number;
+  snapshot: WorkpadSnapshot;
+  changed: WorkpadField[];
+}
+
+export interface FocusHistory {
+  total: number;
+  entries: FocusHistoryEntry[];
+}
+
+function sameList(previous: string[], next: string[]): boolean {
+  return previous.length === next.length && previous.every((item, index) => item === next[index]);
+}
+
+function sameSnapshot(previous: WorkpadSnapshot, next: WorkpadSnapshot): boolean {
+  return previous.goal === next.goal && sameList(previous.nextActions, next.nextActions) && sameList(previous.blockers, next.blockers) && sameList(previous.notes, next.notes);
+}
+
+function changedFields(previous: WorkpadSnapshot, next: WorkpadSnapshot): WorkpadField[] {
+  const changed: WorkpadField[] = [];
+  if (previous.goal !== next.goal) changed.push("goal");
+  if (!sameList(previous.nextActions, next.nextActions)) changed.push("nextActions");
+  if (!sameList(previous.blockers, next.blockers)) changed.push("blockers");
+  if (!sameList(previous.notes, next.notes)) changed.push("notes");
+  return changed;
+}
+
+function formatClock(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "--:--";
+  const date = new Date(timestamp);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Reconstructs the branch's focus history: sanitized workpad snapshots in branch order, consecutive duplicates merged, capped to the newest `limit` entries. */
+export function reconstructHistory(ctx: BranchSource, limit = HISTORY_DEFAULT_LIMIT): FocusHistory {
+  const branch = ctx.sessionManager.getBranch();
+  let total = 0;
+  const entries: FocusHistoryEntry[] = [];
+  for (const raw of branch) {
+    const entry = raw as WorkpadResultEntry | undefined;
+    if (entry?.type !== "message") continue;
+    const message = entry.message;
+    if (message?.role !== "toolResult" || ![WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME].includes(message.toolName ?? "")) continue;
+    const snapshot = sanitizeSnapshot(message.details?.snapshot);
+    if (!snapshot) continue;
+    total += 1;
+    const previous = entries[entries.length - 1];
+    if (previous && sameSnapshot(previous.snapshot, snapshot)) continue;
+    entries.push({ timestamp: message.timestamp ?? 0, snapshot, changed: previous ? changedFields(previous.snapshot, snapshot) : [] });
+  }
+  const size = Math.min(Math.max(Math.trunc(limit) || HISTORY_DEFAULT_LIMIT, 1), HISTORY_MAX_LIMIT);
+  return { total, entries: entries.slice(-size) };
+}
+
+/** Renders a focus history as a bounded, newest-last, non-authoritative timeline. */
+export function formatFocusHistory(history: FocusHistory): string {
+  if (history.entries.length === 0) return "No focus history yet — this branch has no mini-self-org-workpad updates.";
+  const lines = [`Focus history (branch-local, newest last) — ${history.entries.length} of ${history.total}, non-authoritative:`];
+  history.entries.forEach((entry, index) => {
+    const clock = formatClock(entry.timestamp);
+    lines.push(hasContent(entry.snapshot) ? `[${clock}] ${index === 0 ? "start" : entry.changed.join("+")}: ${entry.snapshot.goal ?? "(no goal)"}` : `[${clock}] — cleared —`);
+  });
+  return lines.join("\n");
 }
 
 function formatFields(snapshot: WorkpadSnapshot): string {
@@ -139,7 +233,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { goal: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. Replace the complete snapshot whenever the goal, next actions, blockers, or notes change. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
+    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { goal: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. Replace the complete snapshot whenever the goal, next actions, blockers, or notes change. The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
     promptGuidelines: [STALE_STATE_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
@@ -159,10 +253,28 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool<typeof HistoryParameters, Record<string, never>>({
+    name: HISTORY_TOOL_NAME,
+    label: "Mini self-org focus history",
+    description: `Read the session-local focus history: a bounded, newest-last timeline of this branch's past mini-self-org-workpad snapshots (timestamps, which fields changed, cleared states). A non-authoritative memory aid — not task tracking, and never a replacement for re-deriving from evidence. The goal field tends to cascade into sub-tasks over time; the history is how you find what the broader or parent goal was. Call it deliberately: after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal, to re-orient to the top-level goal. Read-only: it performs no writes. It is exempt from the force-mode gate: you may call it even while a workpad update is due — that update remains required before other actions.`,
+    promptGuidelines: [HISTORY_USAGE_GUIDANCE],
+    parameters: HistoryParameters,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const history = reconstructHistory(ctx, params.limit);
+      return { content: [{ type: "text", text: formatFocusHistory(history) }], details: {} as Record<string, never> };
+    },
+  });
+
   pi.registerCommand("mini-self-org", {
     description: "Show the current read-only session-local workpad.",
     handler: async (_args, ctx) => {
       ctx.ui.notify(formatWorkpad(snapshot), "info");
+    },
+  });
+  pi.registerCommand("mini-self-org-history", {
+    description: "Show the read-only session-local focus history (past workpad snapshots).",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(formatFocusHistory(reconstructHistory(ctx)), "info");
     },
   });
   pi.registerCommand("mini-self-org-force-on", {
@@ -181,7 +293,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_call", async (event) => {
-    if (forceMode && workpadDue && event.toolName !== WORKPAD_TOOL_NAME) {
+    if (forceMode && workpadDue && event.toolName !== WORKPAD_TOOL_NAME && event.toolName !== HISTORY_TOOL_NAME) {
       return { block: true, reason: FORCE_MODE_BLOCK_REASON };
     }
     return undefined;
