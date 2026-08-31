@@ -1,0 +1,27 @@
+direction: down
+
+source {
+  "Session branch" -> "All workpad snapshots in toolResult.details"
+  bg: "#f0f4ff"
+}
+
+reconstruct {
+  "Forward-walk the branch" -> "Dedupe consecutive identical snapshots" -> "Goal-focused timeline (bounded, last ~10)"
+  bg: "#eaf7ea"
+}
+
+audiences {
+  "mini-self-org-history tool" {
+    label: "LLM-facing, explicitly requested"
+    bg: "#fff7e0"
+  }
+  "/mini-self-org-history command" {
+    label: "TUI, read-only, on demand"
+    bg: "#fff7e0"
+  }
+}
+
+source -> reconstruct -> audiences
+"Current: mini-self-org-workpad sets one snapshot, only current state is injected" {
+  style.fill: "#f5f5f5"
+}
