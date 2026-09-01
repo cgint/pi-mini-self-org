@@ -22,6 +22,10 @@ Use the workpad at meaningful state boundaries. If it becomes stale, replace the
 
 **Exact tool names:** The registered tools are `mini-self-org-workpad` and `mini-self-org-history`. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
 
+**Lists:** 1–3 items typical (max 5) for `nextActions` and `notes`; each item is limited to 300 characters. Updates exceeding five items are rejected, not truncated. `blockers` remains capped at two items.
+
+**Evidence tags:** When evidence status matters, prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]`.
+
 The model receives one request-local, non-authoritative current block until it is replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
 Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery; this does not create a callable legacy alias.

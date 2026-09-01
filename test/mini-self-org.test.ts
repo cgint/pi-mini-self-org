@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory, WorkpadParameters } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "mini-self-org-workpad";
 type Handler = (event: any, ctx: any) => Promise<any>;
@@ -36,9 +36,11 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toMatch(/workpad alone is not registered and must never be called as a tool/i);
     expect(tool.description).toContain('{ goal: "…", nextActions: ["…"], blockers: [], notes: [] }');
     expect(tool.description).toContain("lists are arrays, not JSON-encoded strings");
+    expect(tool.description).toContain("Lists: 1–3 items typical (max 5).");
+    expect(tool.description).toContain("[unverified], [verified], or [research]");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i)]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]")]));
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
 
@@ -67,6 +69,31 @@ describe("miniSelfOrg", () => {
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
     expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small", "info");
+  });
+
+  it("accepts and persists up to five next actions and notes, while schema and runtime reject six", async () => {
+    const { tool } = setup();
+    const compiler = TypeCompiler.Compile(WorkpadParameters);
+    const items = Array.from({ length: 5 }, (_, index) => `item ${index + 1}`);
+    const fourItems = { ...valid, nextActions: items.slice(0, 4), notes: items.slice(0, 4) };
+    const fiveItems = { ...valid, nextActions: items, notes: items };
+
+    expect(compiler.Check(fourItems)).toBe(true);
+    expect(compiler.Check(fiveItems)).toBe(true);
+    expect(compiler.Check({ ...fiveItems, nextActions: [...items, "item 6"] })).toBe(false);
+    expect(compiler.Check({ ...fiveItems, notes: [...items, "item 6"] })).toBe(false);
+    expect((await tool.execute("id", fiveItems)).details.snapshot).toEqual({ goal: "Ship", nextActions: items, blockers: [], notes: items });
+    expect((await tool.execute("id", { ...fiveItems, nextActions: [...items, "item 6"] })).isError).toBe(true);
+    expect((await tool.execute("id", { ...fiveItems, notes: [...items, "item 6"] })).isError).toBe(true);
+  });
+
+  it("reconstructs a valid five-item snapshot without truncating it", async () => {
+    const { handlers, commands } = setup();
+    const items = Array.from({ length: 5 }, (_, index) => `item ${index + 1}`);
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, { goal: "Five", nextActions: items, blockers: [], notes: items })]));
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("", { ui: { notify } });
+    expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Five\nNext actions: - item 1\n- item 2\n- item 3\n- item 4\n- item 5\nBlockers: [none]\nNotes: - item 1\n- item 2\n- item 3\n- item 4\n- item 5", "info");
   });
 
   it("clearly renders and reports clearing", async () => {

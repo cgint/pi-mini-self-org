@@ -10,6 +10,9 @@ const HISTORY_DEFAULT_LIMIT = 10;
 const HISTORY_MAX_LIMIT = 15;
 const MAX_GOAL_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
+export const MAX_ITEMS = 5;
+const LIST_GUIDANCE = "Lists: 1–3 items typical (max 5).";
+const EVIDENCE_TAG_GUIDANCE = "For notes and blockers, use [unverified], [verified], or [research] when the evidence status matters.";
 const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a "new" goal. It is read-only and non-authoritative: it shows this branch's focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When you determine the current workpad no longer reflects material evidence, goal, next actions, blockers, or notes, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.`;
@@ -27,9 +30,9 @@ interface WorkpadDetails {
 
 export const WorkpadParameters = Type.Object({
   goal: Type.Union([Type.String({ minLength: 1, maxLength: MAX_GOAL_LENGTH }), Type.Null()]),
-  nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 3 }),
+  nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: MAX_ITEMS }),
   blockers: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 2 }),
-  notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 3 }),
+  notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: MAX_ITEMS }),
 });
 
 export const HistoryParameters = Type.Object({
@@ -55,9 +58,9 @@ export function sanitizeSnapshot(value: unknown): WorkpadSnapshot | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
   const goal = candidate.goal === null ? null : sanitizeText(candidate.goal, MAX_GOAL_LENGTH);
-  const nextActions = sanitizeList(candidate.nextActions, 3);
+  const nextActions = sanitizeList(candidate.nextActions, MAX_ITEMS);
   const blockers = sanitizeList(candidate.blockers, 2);
-  const notes = sanitizeList(candidate.notes, 3);
+  const notes = sanitizeList(candidate.notes, MAX_ITEMS);
   if (goal === undefined || !nextActions || !blockers || !notes) return undefined;
   return { goal, nextActions, blockers, notes };
 }
@@ -217,8 +220,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { goal: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. Replace the complete snapshot whenever the goal, next actions, blockers, or notes change. The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
-    promptGuidelines: [STALE_STATE_GUIDANCE],
+    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { goal: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} ${EVIDENCE_TAG_GUIDANCE} Replace the complete snapshot whenever the goal, next actions, blockers, or notes change. The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Clear it only when it no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
+    promptGuidelines: [STALE_STATE_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
       const next = sanitizeSnapshot(params);

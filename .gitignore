@@ -9,5 +9,6 @@ build/
 *.log
 *.jsonl
 .herdr-*-report.md
+cg-task-result-*.md
 
 .codegiant/
