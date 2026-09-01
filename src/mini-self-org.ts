@@ -164,12 +164,13 @@ export function formatFocusHistory(history: FocusHistory): string {
 }
 
 function formatFields(snapshot: WorkpadSnapshot): string {
-  const formatList = (items: string[]) => (items.length ? items.map((item) => `- ${item}`).join("\n") : "[none]");
+  const formatList = (label: string, items: string[]) =>
+    items.length ? `${label}:\n${items.map((item) => `- ${item}`).join("\n")}` : `${label}: [none]`;
   return [
     `Goal: ${snapshot.goal ?? "[none]"}`,
-    `Next actions: ${formatList(snapshot.nextActions)}`,
-    `Blockers: ${formatList(snapshot.blockers)}`,
-    `Notes: ${formatList(snapshot.notes)}`,
+    formatList("Next actions", snapshot.nextActions),
+    formatList("Blockers", snapshot.blockers),
+    formatList("Notes", snapshot.notes),
   ].join("\n");
 }
 

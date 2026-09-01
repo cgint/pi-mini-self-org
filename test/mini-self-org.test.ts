@@ -57,9 +57,11 @@ describe("miniSelfOrg", () => {
       "Updated — active until replaced or cleared",
       "",
       "Goal: Ship",
-      "Next actions: - Test",
+      "Next actions:",
+      "- Test",
       "Blockers: [none]",
-      "Notes: - Keep small",
+      "Notes:",
+      "- Keep small",
     ]);
 
     const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
@@ -68,7 +70,7 @@ describe("miniSelfOrg", () => {
     expect(jsonEncodedLists.isError).toBe(true);
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
-    expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small", "info");
+    expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Ship\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small", "info");
   });
 
   it("accepts and persists up to five next actions and notes, while schema and runtime reject six", async () => {
@@ -93,7 +95,7 @@ describe("miniSelfOrg", () => {
     await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, { goal: "Five", nextActions: items, blockers: [], notes: items })]));
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
-    expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Five\nNext actions: - item 1\n- item 2\n- item 3\n- item 4\n- item 5\nBlockers: [none]\nNotes: - item 1\n- item 2\n- item 3\n- item 4\n- item 5", "info");
+    expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Five\nNext actions:\n- item 1\n- item 2\n- item 3\n- item 4\n- item 5\nBlockers: [none]\nNotes:\n- item 1\n- item 2\n- item 3\n- item 4\n- item 5", "info");
   });
 
   it("clearly renders and reports clearing", async () => {
@@ -150,7 +152,7 @@ describe("miniSelfOrg", () => {
       role: "custom",
       customType: TOOL_NAME,
       display: false,
-      content: "Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.\n\nGoal: Ship\nNext actions: - Test\nBlockers: [none]\nNotes: - Keep small",
+      content: "Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.\n\nGoal: Ship\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
     });
     expect(result.messages[1].content).toContain("mini-self-org-workpad");
     expect(result.messages[1].content).toMatch(/workpad alone is not registered and must never be called as a tool/i);
