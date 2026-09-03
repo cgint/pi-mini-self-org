@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
@@ -209,6 +209,19 @@ function renderCleared(): StructuralComponent {
   };
 }
 
+function renderRejected(result: AgentToolResult<WorkpadDetails>): StructuralComponent {
+  const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");
+  const detail =
+    text.split("\n").find((line) => line.trim().startsWith("- ")) ??
+    text.split("\n").find((line) => line.trim().length > 0);
+  const lines = ["Rejected — workpad unchanged (previous state still active)."];
+  if (detail) lines.push(detail.trim());
+  return {
+    render: (width) => truncateLines(lines, width),
+    invalidate: () => {},
+  };
+}
+
 /** Registers the session-local workpad tool and its read-only command. */
 export default function miniSelfOrg(pi: ExtensionAPI): void {
   let snapshot = emptySnapshot();
@@ -235,7 +248,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } } as WorkpadDetails,
       };
     },
-    renderResult(result) {
+    renderResult(result, _options, _theme, context) {
+      if (context.isError) return renderRejected(result);
       const resultSnapshot = sanitizeSnapshot((result.details as WorkpadDetails | undefined)?.snapshot);
       return resultSnapshot && hasContent(resultSnapshot) ? renderSnapshot(resultSnapshot) : renderCleared();
     },

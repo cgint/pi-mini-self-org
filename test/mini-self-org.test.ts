@@ -73,6 +73,30 @@ describe("miniSelfOrg", () => {
     expect(notify).toHaveBeenCalledWith("Mini self-org workpad\nGoal: Ship\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small", "info");
   });
 
+  it("renders self-rejected workpad updates as rejected", async () => {
+    const { tool } = setup();
+    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
+
+    expect(rejected.isError).toBe(true);
+    expect(tool.renderResult(rejected, {}, {}, { isError: true }).render(80)).toEqual([
+      "Rejected — workpad unchanged (previous state still active).",
+      "Mini self-org workpad update rejected.",
+    ]);
+  });
+
+  it("renders harness validation failures as rejected with their error item", () => {
+    const { tool } = setup();
+    const rejected = {
+      content: [{ type: "text", text: "Validation failed for tool \"mini-self-org-workpad\":\n  - nextActions.0: must be string\nReceived arguments: ..." }],
+      details: {},
+    };
+
+    expect(tool.renderResult(rejected, {}, {}, { isError: true }).render(80)).toEqual([
+      "Rejected — workpad unchanged (previous state still active).",
+      "- nextActions.0: must be string",
+    ]);
+  });
+
   it("accepts and persists up to five next actions and notes, while schema and runtime reject six", async () => {
     const { tool } = setup();
     const compiler = TypeCompiler.Compile(WorkpadParameters);
