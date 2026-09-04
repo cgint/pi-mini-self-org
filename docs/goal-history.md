@@ -1,10 +1,12 @@
 # Goal-history for the workpad — findings & proposal
 
-Status: **v1 implemented** (2026-08-31): read-only `mini-self-org-history` tool + `/mini-self-org-history` TUI command, **no snapshot IDs, no `restore`** — those are deferred (design v2 retained below as deferred material). The force-mode gate was removed as unused (2026-08-31); re-add only with usage evidence. TDD-first: 15/15 tests green, `tsc --noEmit` clean, README updated.
+Status: **v2 implemented** (2026-09-04): the current snapshot separates `overallGoal` (stable umbrella outcome for one session-local work thread) from `currentFocus` (immediate bounded activity), while retaining the read-only history tool and no IDs/restore. Legacy `goal` snapshots normalize only to `currentFocus`, with `overallGoal: null`. Focus-only clear retains `overallGoal`; full clear empties every field. The force-mode gate remains removed pending usage evidence. TDD-first: the new contract was demonstrated red, then 20/20 Vitest tests and `tsc --noEmit` were run green.
+
+> **Historical v1 rationale below:** references to the old overloaded `goal` field and “v1 unchanged” describe the prior design, not the current schema.
 
 ## Conclusion
 
-**Yes, worth building** — but only in an **LLM-requestable, read-only, goal-focused** form:
+The history feature remains an **LLM-requestable, read-only, work-thread-focused** re-orientation aid. Its earlier evidence exposed a stronger issue: the one current `goal` field collapsed stable intent into tactical focus. The v2 snapshot now keeps both visible on every request; history remains optional and is not auto-injected.
 
 1. A new tool `mini-self-org-history` the model calls *only when it wants* to see how the goal/focus evolved (post-compaction, after long interruptions, before clearing, before starting a "new" goal).
 2. A TUI command (`/mini-self-org-history`) sharing the same reconstruction, for resume-after-interruption visibility.

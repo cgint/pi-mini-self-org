@@ -10,15 +10,17 @@ pi install https://github.com/cgint/pi-mini-self-org
 
 ## What it keeps
 
-The `mini-self-org-workpad` tool (label: **Mini self-org workpad**) atomically replaces a complete snapshot containing `goal`, `nextActions`, `blockers`, and `notes`.
+The `mini-self-org-workpad` tool (label: **Mini self-org workpad**) atomically replaces a complete snapshot containing `overallGoal`, `currentFocus`, `nextActions`, `blockers`, and `notes`.
 
-The `mini-self-org-history` tool (label: **Mini self-org focus history**) reads a bounded, newest-last timeline of this branch's past workpad snapshots (timestamps, which fields changed, cleared states). It is read-only and non-authoritative: a re-orientation aid, not project memory, not task tracking, and never a replacement for a workpad update.
+`overallGoal` is the stable umbrella outcome for the current **session-local work thread**. `currentFocus` is the immediate bounded activity within it. A session may contain multiple work threads over time; neither field is project memory or cross-session planning. Set `currentFocus` to `null` to clear a finished focus while retaining its work thread. Clear every field only when the entire workpad no longer aids the session.
+
+The `mini-self-org-history` tool (label: **Mini self-org focus history**) reads a bounded, newest-last timeline of this branch's past workpad snapshots (timestamps, which fields changed, cleared states), distinguishing overall-goal changes from focus changes. It is read-only and non-authoritative: a re-orientation aid, not project memory, not task tracking, and never a replacement for a workpad update.
 
 It is not project memory, durable cross-session planning or task tracking, or an automatic state update.
 
 ## Use
 
-Use the workpad at meaningful state boundaries. If it becomes stale, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
+Use the workpad at meaningful state boundaries. If its overall goal, current focus, or other state becomes stale, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
 
 **Exact tool names:** The registered tools are `mini-self-org-workpad` and `mini-self-org-history`. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
 
@@ -28,7 +30,7 @@ Use the workpad at meaningful state boundaries. If it becomes stale, replace the
 
 The model receives one request-local, non-authoritative current block until it is replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
-Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery; this does not create a callable legacy alias.
+Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery: their old `goal` is normalized to `currentFocus`, with `overallGoal: null`; this does not create a callable legacy alias.
 
 ## Session and privacy boundary
 
