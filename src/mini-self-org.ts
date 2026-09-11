@@ -13,10 +13,12 @@ const MAX_CURRENT_FOCUS_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
 export const MAX_ITEMS = 5;
 const LIST_GUIDANCE = "Lists: 1–3 items typical (max 5).";
-const EVIDENCE_TAG_GUIDANCE = "For notes and blockers, use [unverified], [verified], or [research] when the evidence status matters.";
+const EVIDENCE_TAG_GUIDANCE = "Use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
+const NOTES_SEMANTICS = "notes are durable steering context — active hypotheses, working decisions, constraints — not logs, status, or findings.";
+const DURABILITY_GUIDANCE = "Write only what is worth re-reading after ten more tool calls or a context compaction; anything already visible in the conversation, or stale by the next tool call, belongs in the conversation — not here.";
 const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
-const STALE_STATE_GUIDANCE = `When you determine the current workpad no longer reflects the overall goal, current focus, material evidence, next actions, blockers, or notes, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale. Do not update ritualistically after every tool; use meaningful state boundaries.`;
+const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
 export interface WorkpadSnapshot {
   /** Stable umbrella outcome for the active session-local work thread. */
@@ -205,7 +207,7 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
 }
 
 function contextMessage(snapshot: WorkpadSnapshot): string {
-  return `Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. ${TOOL_NAME_GUIDANCE}\n\n${formatFields(snapshot)}`;
+  return `Your own working scratchpad — steering state for this session, not a record. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared. ${TOOL_NAME_GUIDANCE}\n\n${formatFields(snapshot)}`;
 }
 
 interface StructuralComponent {
@@ -256,8 +258,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} ${EVIDENCE_TAG_GUIDANCE} overallGoal is the stable umbrella outcome for the current session-local work thread; currentFocus is the immediate bounded activity. Replace the complete snapshot whenever either field, next actions, blockers, or notes change. The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence, approved plans, or task tracking.`,
-    promptGuidelines: [STALE_STATE_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE],
+    description: `Your own scratchpad for organizing your work in this session — it steers your next moves; the human seeing it is a side effect, not the audience. Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} overallGoal is the stable umbrella outcome for the current session-local work thread; currentFocus is the immediate bounded activity. ${NOTES_SEMANTICS} ${EVIDENCE_TAG_GUIDANCE} ${DURABILITY_GUIDANCE} The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence logs, approved plans, or task tracking.`,
+    promptGuidelines: [STALE_STATE_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE, DURABILITY_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
       const next = sanitizeSnapshot(params);

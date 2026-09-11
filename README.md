@@ -1,6 +1,6 @@
 # pi-mini-self-org
 
-A bounded Pi extension for keeping one agent's current session workpad visible and request-local.
+A bounded Pi extension that gives one agent its own session workpad — durable steering state, request-local injection, human visibility as a side effect.
 
 ## Install
 
@@ -14,21 +14,23 @@ The `mini-self-org-workpad` tool (label: **Mini self-org workpad**) atomically r
 
 `overallGoal` is the stable umbrella outcome for the current **session-local work thread**. `currentFocus` is the immediate bounded activity within it. A session may contain multiple work threads over time; neither field is project memory or cross-session planning. Set `currentFocus` to `null` to clear a finished focus while retaining its work thread. Clear every field only when the entire workpad no longer aids the session.
 
+The workpad is the agent's **own scratchpad**: it steers the agent's next moves rather than reporting to an external audience. **Durability filter:** write only what is worth re-reading after ten more tool calls or a context compaction — anything already visible in the conversation, or stale by the next tool call, belongs in the conversation, not here. `notes` are durable steering context — active hypotheses, working decisions, constraints — not logs, status, or findings.
+
 The `mini-self-org-history` tool (label: **Mini self-org focus history**) reads a bounded, newest-last timeline of this branch's past workpad snapshots (timestamps, which fields changed, cleared states), distinguishing overall-goal changes from focus changes. It is read-only and non-authoritative: a re-orientation aid, not project memory, not task tracking, and never a replacement for a workpad update.
 
 It is not project memory, durable cross-session planning or task tracking, or an automatic state update.
 
 ## Use
 
-Use the workpad at meaningful state boundaries. If its overall goal, current focus, or other state becomes stale, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
+Use the workpad at meaningful state boundaries. When the overall goal, current focus, plan, or blockers materially change, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
 
 **Exact tool names:** The registered tools are `mini-self-org-workpad` and `mini-self-org-history`. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
 
 **Lists:** 1–3 items typical (max 5) for `nextActions` and `notes`; each item is limited to 300 characters. Updates exceeding five items are rejected, not truncated. `blockers` remains capped at two items.
 
-**Evidence tags:** When evidence status matters, prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]`.
+**Confidence tags:** Prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]` to label the confidence of a steering item — labels on plans and hypotheses, not an evidence log.
 
-The model receives one request-local, non-authoritative current block until it is replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
+The model receives one request-local current block per request, framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. It remains active until replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
 Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery: their old `goal` is normalized to `currentFocus`, with `overallGoal: null`; this does not create a callable legacy alias.
 

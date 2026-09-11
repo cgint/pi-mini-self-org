@@ -63,7 +63,7 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toContain("[unverified], [verified], or [research]");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]")]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]"), expect.stringContaining("Write only what is worth re-reading")]));
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
 
@@ -203,7 +203,7 @@ describe("miniSelfOrg", () => {
       role: "custom",
       customType: TOOL_NAME,
       display: false,
-      content: "Session-local, non-authoritative mini-self-org workpad.\nCurrent until replaced or cleared. The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
+      content: "Your own working scratchpad — steering state for this session, not a record. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared. The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
     });
     expect(result.messages[1].content).toContain("mini-self-org-workpad");
     expect(result.messages[1].content).toMatch(/workpad alone is not registered and must never be called as a tool/i);
