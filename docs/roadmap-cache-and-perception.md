@@ -127,7 +127,7 @@ the default stays *hold* until data says otherwise.
 
 | Gate | Experiment | Decides | Owner / reach |
 | --- | --- | --- | --- |
-| **G1** | Replay one long transcript against pre-fix and post-fix framing, varying nothing else | Whether wording matters at all — natural sessions cannot answer this, session-level variance swamps it | Local script + local models. Cheapest real answer available |
+| **G1** | Replay one long transcript against pre-fix and post-fix framing, varying nothing else | Whether wording matters at all — natural sessions cannot answer this, session-level variance swamps it | Local script + local models. Cheapest real answer available. **First attempt run 2026-09-11: too short and contaminated, see §6** |
 | **G2** | Re-measure workpad bytes / session bytes; look for a re-read cliff | Whether the sheet has become worth engineering for | Read-only over session data |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
 | **G4** | Upstream: pin the breakpoint on the last real message rather than the injected one | Whether the §3 churn disappears without touching the design | Outside this repo; needs a pi feature or option |
@@ -137,7 +137,52 @@ the default stays *hold* until data says otherwise.
 far were requested before the symptom they addressed had ever been measured, and both were
 withdrawn afterwards. The gate table exists to make that failure mode expensive to repeat.
 
-## 6. How to read this document against the rest
+## 6. Measured: the first live A/B in this environment (2026-09-11)
+
+Two nested `pi --print` arms over four identical turns, logs written inside the repo under
+`.g1-sessions/` (ignored by `.gitignore:10`, `*.jsonl`):
+
+```
+pi -ne -e <pi-olla-autodetect>/index.ts [-e ./index.ts] \
+   --session-dir .g1-sessions --session-id g1-A|g1-B \
+   --model home-llm/qwen38-flashnext-twins-direct --tools read[,mini-self-org-workpad]
+```
+
+### What it established
+
+- **Environment facts worth keeping.** `-ne` also removes the package that registers the local
+  provider, so a nested run must re-add `pi-olla-autodetect` with `-e` or no model resolves at all.
+  The Anthropic path answers `400 credit balance too low`. Local models report
+  `cacheRead`/`cacheWrite` = 0 on every row. Endpoint health: `qwen38-flashnext-twins-direct`
+  answers, `qwen3.8-27b-...-direct` returns 500, `qwen3.8-27b-...dflash2` returns 404.
+- **The extension works from source under `-ne -e`.** The nested agent registered the tool and
+  called it unprompted: 4 writes, persisted snapshots median 544 B (max 584 B), write arguments
+  totalling 1,977 B.
+- **The sheet travels after a write.** Inside one turn, consecutive requests stepped
+  4,236 → 5,039 input tokens with no user input between them.
+
+### What it did **not** establish
+
+- **Cache cost — unmeasurable here.** Only the Anthropic path stamps `cache_control`, and it is
+  unreachable on credit; local models expose no cache counters. §3 therefore stays inferred.
+- **Wording effect — null with no power.** Strict injected-block acknowledgements: **0 in arm A
+  and 0 in arm B**, across 4 assistant text turns each. Four turns cannot detect a rate that
+  appears in long sessions; this is not evidence of no effect.
+- **Extension cost — unattributable.** Arm A made 9 real requests (55,937 input tokens), arm B 7
+  (32,722). The delta is **not** a price for the extension: the arms diverged behaviourally —
+  only A carried the 953-char tool schema, B did an extra read, and B spent output text
+  complaining the tool was absent. No chars-to-tokens conversion is offered anywhere in this file.
+- **A clean control.** My turn-1 prompt named the workpad tool, so both arms mentioned it 4 times
+  and arm B knew something was missing. Any future arm must use neutral prompts.
+
+### Consequence for the gates
+
+No gate moved. G1 needs a real fixture before it means anything: a single long fixed transcript
+(30+ turns), prompts that never name the tool under test, both framings, same model and session
+dir as above. The cache question needs either provider credit (G5) or upstream cache-counter
+exposure — it cannot be answered in this environment at all.
+
+## 7. How to read this document against the rest
 
 - `docs/roadmap-cache-and-perception.md` — this map: standing picture, ledger, gates.
 - `20260911_workpad-voice-and-frame_1_PLAN.md` — how we got here, including two committed
