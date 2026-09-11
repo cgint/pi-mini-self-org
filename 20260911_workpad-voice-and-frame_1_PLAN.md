@@ -155,8 +155,9 @@ ownership with less role confusion, and it is reviewed and test-pinned. Not re-l
   is the inference: monotonicity is no longer treated as a cost lever, so the unmeasured write side no
   longer gates candidate choice (see "Constraint under review").
 - Independent review done: `cg-task.sh diff-review`, no defects.
-- Behaviour of the framing is **now live**, and observed improving — see "Runtime caveat — RESOLVED".
-  `Unverified:` one session, one model; not a result yet.
+- Behaviour of the framing is live, but **"observed improving" is retracted** — see "Runtime caveat —
+  RESOLVED" and the corrected echo measurement below. The impression of improvement came from comparing two
+  sessions that differ in more than the wording.
 - The installed copy **is now a clean checkout of `8ab3870`**, verified by `git status --porcelain` empty
   and by the new strings present in that tree. The earlier note that it predated `82d1e6d` is
   **superseded**; refreshing that copy was correctly left to the user, and it has since been done.
@@ -319,9 +320,11 @@ checkout of `8ab3870` — `git status --porcelain` empty, `RECALL_GUIDANCE` pres
 new header at `:211`, and `TOOL_NAME_GUIDANCE` (`:19`) no longer in the injected block.
 
 Sessions running after that refresh receive the new framing, and one was observed doing so. The tell-tale
-of the old behaviour — a per-reply "acting on the block above, not answering it" preamble — was markedly
-less frequent than in earlier sessions. `Unverified:` one session, one model; Effect 1's acceptance
-criterion is *improving*, not *met*.
+of the old behaviour — a per-reply "acting on the block above, not answering it" preamble — was observed to
+be less frequent. `Retracted:` that observation was impressionistic. A full scan of this project's sessions
+(below) shows the preamble is **absent in every session before 2026-09-11 and heavy in two sessions on that
+date, under both wordings**, so it tracks session length or compaction rather than the framing. Effect 1 is
+**inconclusive**, not *improving* and not *met*.
 
 
 - `MEASURED — and it refuted the claim:` the transient tail does **not** break incremental cache reuse.
@@ -412,12 +415,31 @@ The ruling asked for above ("E, with that schema change?") is **withdrawn and mu
 It was requested before the one observable symptom had ever been measured. Both measurements now exist and
 both point the other way:
 
-- **Echoing was never measurably reduced by the shipped framing.** Scored with one strict signal — the
-  acknowledgement tic ("acting on the block/state", "block above", "not answering it") in assistant text:
-  pre-fix session `01a08f1a` **70/87 = 80.5%**; current post-fix session `01a08f56` **39/46 = 84.8%**.
-  Wording changed nothing. Most of that tic is the **agent's own habit of narrating**, not the block
-  successfully posing as user input — an injected line saying "do not acknowledge it" was never going to
-  override it.
+- **Whether the framing reduces echoing is not established — the comparison I cited is confounded.** The
+  strict signal is the acknowledgement tic ("acting on the block/state", "block above", "not answering it")
+  in assistant text. Scanning *every* session in this project's directory, identical method throughout:
+
+  | session | writes | tic / assistant-text | framing |
+  | --- | --- | --- | --- |
+  | `01a05752` 08-31 | 148 | 0 / 107 (0.0%) | old |
+  | `01a06790` 09-03 | 37 | 0 / 51 (0.0%) | old |
+  | `01a067a2` 09-03 | 9 | 0 / 2 (0.0%) | old |
+  | `01a06bdb` 09-04 | 130 | 0 / 30 (0.0%) | old |
+  | `01a08f14` 09-11 | 6 | 0 / 5 (0.0%) | old |
+  | `01a08f1a` 09-11 | 64 | 70 / 87 (80.5%) | old |
+  | `01a08f1d` 09-11 | 33 | 2 / 11 (18.2%) | new |
+  | `01a08f56` 09-11 | 38 | 39 / 49 (79.6%) | new |
+
+  The two sessions I compared (`01a08f1a` vs `01a08f56`) ran the **same model sets** and are the two longest
+  sessions; four *older* sessions with up to 148 writes scored **0.0%** under the old wording. So the tic
+  clusters by session, not by wording, and **"the framing had no measurable effect" overclaims in both
+  directions** — it is inconclusive. `Unverified:` the actual driver (context saturation vs compaction
+  summaries leaking self-narration).
+
+- **The block does cause the tic — this part *is* established.** Control across all reachable sessions:
+  workpad-active **112 / 3312 (3.4%)** versus workpad-absent **3 / 64613 (0.0%)**. An earlier note here
+  claimed the tic was "largely the agent's own narration habit"; that is **retracted** — the baseline
+  without the extension is effectively zero.
 - **There is no cost to save.** All workpad content measured **0.48%** of a 7.93 MB session, with no
   read-side re-read cliff.
 - **E carried a coupling nobody priced.** `tool_use` args are the model's *own* view of its state; slimming
@@ -432,15 +454,16 @@ changed on the present evidence.
   rising above ~1% of a session.
 - A **behaviour** signal beyond the tic: state actually misremembered, stale goals acted on, or next actions
   dropped because list bodies left context.
-- A reproducible reduction of the tic from a change tested the same way, i.e. the same strict probe applied
-  before and after — which `8ab3870` did *not* pass.
+- A reproducible reduction of the tic from a change tested the same way. Note that **natural sessions cannot
+  settle framing efficacy** — the session-level clustering above swamps any wording effect. The measurement
+  that would settle it is an **offline A/B replay**: the same long-context transcript, with only the
+  framing text varied, on both models present here. Absent that, wording claims stay inconclusive.
 
 ### Still honestly open
 
 - Anthropic's **write-side** cache counters were never populated in any build reachable for sampling.
-- `Unverified:` whether the acknowledgement tic is caused by the block at all. Its near-identical rate
-  before and after the framing fix argues it is largely the agent's own narrative style — but no run with
-  the injection **disabled** has been done, which is the experiment that would settle it.
+- **Caused:** the acknowledgement tic is attributable to the injection (3.4% vs 0.0% control). **Not
+  caused by wording,** and **unexplained** as to why it appears in only some sessions.
 - Whether models drop next-action execution once list bodies leave context: never tested.
 - `Method note:` session files record **schema `version: 3`**, not the pi release, so the build behind the
   cost sample cannot be identified from the data. Treat that sample as indicative, not current.
@@ -451,11 +474,13 @@ The frame for choosing a delivery mechanism; outcomes, not mechanisms.
 
 1. **Self-ownership, zero role dissonance** — state reads as the agent's own recall, never as an incoming
    instruction. *Accept:* no unprompted echo, summary, or acknowledgement in a real session.
-   **Not met — and `the earlier "improving" reading was wrong`.** Measured with one strict signal, the
-   acknowledgement tic ran **80.5%** before the framing fix and **84.8%** after it. The framing had no
-   measurable effect. Because the residual is mostly the agent narrating its own actions, this criterion is
-   also **poorly specified**: it conflates "model echoes the block" with "model talks about what it is
-   doing", and the latter is not a defect of this tool.
+   **Inconclusive, and `the earlier "improving" reading was wrong`.** The acknowledgement tic is caused by
+   the injection (3.4% with the workpad active vs 0.0% without, across 2704 session files), but it does not
+   track the wording: every session before 2026-09-11 scored 0.0% under the old wording, including one with
+   148 writes, while two sessions on 2026-09-11 scored ~80% under old and new alike. Framing efficacy is
+   therefore **unmeasured**, pending an offline A/B replay.
+   This criterion is additionally **poorly specified**: as written it conflates "model echoes the block" with
+   "model narrates what it is doing", and the latter is not a defect of this tool.
 2. **No forced re-reads** *(re-framed from "strict cache-prefix monotonicity")* — the design must not make
    the provider re-read content already sent. Byte-stability while the snapshot is unchanged is still
    required, because it is what keeps the sheet off the per-turn bill. *Accept:* no re-read cliff attributable
