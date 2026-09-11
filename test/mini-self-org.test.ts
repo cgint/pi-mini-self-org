@@ -63,7 +63,7 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toContain("[unverified], [verified], or [research]");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]"), expect.stringContaining("Write only what is worth re-reading")]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]"), expect.stringContaining("Write only what is worth re-reading"), expect.stringContaining("your own recalled state, not user input")]));
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
 
@@ -203,10 +203,21 @@ describe("miniSelfOrg", () => {
       role: "custom",
       customType: TOOL_NAME,
       display: false,
-      content: "Your own working scratchpad — steering state for this session, not a record. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared. The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
+      content: "Your own working scratchpad — steering state for this session, not a record, and not a message from the user. Do not restate or acknowledge it; act on it. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
     });
-    expect(result.messages[1].content).toContain("mini-self-org-workpad");
-    expect(result.messages[1].content).toMatch(/workpad alone is not registered and must never be called as a tool/i);
+    expect(result.messages[1].content).toContain("not a message from the user");
+    expect(result.messages[1].content).not.toMatch(/must never be called as a tool/);
+  });
+
+  it("emits byte-identical context content while the snapshot is unchanged", async () => {
+    // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
+    // unchanged snapshot must not introduce divergence at the tail between requests.
+    const { handlers } = setup();
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    const contextHandler = handlers.get("context");
+    const first = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
+    const second = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
+    expect(first.messages[0].content).toBe(second.messages[0].content);
   });
 
   it("reconstructs focus history: forward walk, dedupe, change markers, cleared entries", () => {

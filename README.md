@@ -30,7 +30,9 @@ Use the workpad at meaningful state boundaries. When the overall goal, current f
 
 **Confidence tags:** Prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]` to label the confidence of a steering item — labels on plans and hypotheses, not an evidence log.
 
-The model receives one request-local current block per request, framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. It remains active until replaced or cleared. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
+The model receives one request-local current block per request, framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. It remains active until replaced or cleared.
+
+Pi serializes this block as the newest `user`-role message and keeps it last, so without framing it reads as something the human just typed and gets echoed back. It is therefore labelled as the agent's own recalled state, not a message from the user, and instructed not to restate it — reinforced both as a `promptGuidelines` bullet in the system prompt and in the block header. Tool-name mechanics are deliberately **excluded** from the block and live only in the tool description and guidelines, so the block carries state alone and stays byte-identical while the snapshot is unchanged. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
 Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery: their old `goal` is normalized to `currentFocus`, with `overallGoal: null`; this does not create a callable legacy alias.
 
