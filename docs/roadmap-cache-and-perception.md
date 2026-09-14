@@ -147,20 +147,27 @@ What the 2026-09-14 write-driving runs established, before the wording compariso
 - **Session continuation works across separate `pi -p` processes** on one `--session-id`: the
   `w-OLD` arm stepped `messagesBefore` 1→6→11→…→56, +5 per turn (user + workpad toolCall +
   toolResult + … pattern), 4 requests per turn group.
-- **The local model needs the tool *named* in the prompt to write.** Prompts phrased "update your
-  workpad record" (tool unnamed) produced **0 workpad calls in 12 turns → 0 sheet deliveries → the
-  wording comparison stays void.** Any future arm must name `mini-self-org-workpad` explicitly
-  (supersedes the "neutral prompts" note of 09-11 for this model family: neutrality was the defect,
-  not the help).
+- **Corrigendum (2026-09-14, verified from session files): the "needs the tool named" bullet is
+  retracted.** The 12 unnamed-prompt turns that produced 0 workpad calls were all **`500 litellm
+  Connection error` endpoint stubs** (`stopReason:"error"`, 0 tokens) — the local home-llm
+  endpoint was down from `w-OLD` (07:43) through `probe`/`w2-OLD` (07:49). They prove nothing about
+  prompt phrasing. Once the `w-OLD` session continued on **cerebras/qwen-3.8-27b** (user-instructed
+  model switch, 07:51:30), the *same unnamed* generic phrasing ("Update your workpad (goal and
+  current focus) to reflect what you are doing now…") yielded **16 workpad tool calls** (OLD) and
+  **13** (NEW) across the completed 12-turn cerebras runs (§6a) — naming is not a necessity
+  for this model. The local model's phrasing sensitivity remains an open question: it emitted no
+  non-error output at all on 09-14, so there is no datum for it.
 - Preamble cost already settled separately: `NEW` framing is **−83 B/request** vs `OLD` (283 B vs
   366 B), because the tool-name clause dropped (−161 B) outweighs the anti-acknowledgement clause
   (+78 B). Wording was never a cost lever; only the tic rate is the open question, and it has not
   been measured with the sheet delivered.
 - Environment: macOS has no `timeout` binary (exit 127) — arm scripts must not gate on it.
 
-Status: re-run of both arms with tool-named prompts was started (`w2-OLD`), then stopped by user
-order to persist §7 first. **No wording number is valid yet; §4.2's "not moved by phrasing" stands
-on the 2026-09-11 data only.**
+Status: the completed 12-turn cerebras runs (§6a) delivered the sheet and gave a wording
+answer. **Behaviour is a tie** — restating the sheet's field labels and explicit acknowledgments
+were 0 in both arms; the only signal is loose mention of "workpad/focus", 5/31 text blocks (OLD)
+vs 3/31 (NEW), small and not a verdict. NEW's only real attributable edge is cost (−83 B/request).
+§4.2's decision stands: no `src/` change is signalled by G1.
 
 ## 6. Measured: the first live A/B in this environment (2026-09-11)
 
