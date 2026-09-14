@@ -93,6 +93,9 @@ fixed.
 - **Why the tic concentrates.** Context saturation, compaction leaking self-narration, or
   something else. The same-day pair `01a08f1d` (18.2%) vs `01a08f56` (79.6%) rules out write
   count; model sets were identical, ruling out model.
+- **Whether the §7 placement (assistant-before-user, merge rule) is honored and benign.** Requires
+  one fixture arm for insertion support, then the TIC arm over ≥30 turns with the sheet actually
+  delivered in every arm (tool-named prompts per §6a). Until then §7 is a candidate, not a finding.
 - **Whether list bodies leaving context degrades next-action execution.** Never tested.
 
 ### 4.4 BLIND — not observable today
@@ -136,6 +139,28 @@ the default stays *hold* until data says otherwise.
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
 withdrawn afterwards. The gate table exists to make that failure mode expensive to repeat.
+
+## 6a. Where the A/B actually stands (2026-09-14)
+
+What the 2026-09-14 write-driving runs established, before the wording comparison was measured:
+
+- **Session continuation works across separate `pi -p` processes** on one `--session-id`: the
+  `w-OLD` arm stepped `messagesBefore` 1→6→11→…→56, +5 per turn (user + workpad toolCall +
+  toolResult + … pattern), 4 requests per turn group.
+- **The local model needs the tool *named* in the prompt to write.** Prompts phrased "update your
+  workpad record" (tool unnamed) produced **0 workpad calls in 12 turns → 0 sheet deliveries → the
+  wording comparison stays void.** Any future arm must name `mini-self-org-workpad` explicitly
+  (supersedes the "neutral prompts" note of 09-11 for this model family: neutrality was the defect,
+  not the help).
+- Preamble cost already settled separately: `NEW` framing is **−83 B/request** vs `OLD` (283 B vs
+  366 B), because the tool-name clause dropped (−161 B) outweighs the anti-acknowledgement clause
+  (+78 B). Wording was never a cost lever; only the tic rate is the open question, and it has not
+  been measured with the sheet delivered.
+- Environment: macOS has no `timeout` binary (exit 127) — arm scripts must not gate on it.
+
+Status: re-run of both arms with tool-named prompts was started (`w2-OLD`), then stopped by user
+order to persist §7 first. **No wording number is valid yet; §4.2's "not moved by phrasing" stands
+on the 2026-09-11 data only.**
 
 ## 6. Measured: the first live A/B in this environment (2026-09-11)
 
@@ -182,9 +207,72 @@ No gate moved. G1 needs a real fixture before it means anything: a single long f
 dir as above. The cache question needs either provider credit (G5) or upstream cache-counter
 exposure — it cannot be answered in this environment at all.
 
-## 7. How to read this document against the rest
+## 7. Sheet position: a provider-agnostic candidate (2026-09-14)
 
-- `docs/roadmap-cache-and-perception.md` — this map: standing picture, ledger, gates.
+G4 names the upstream fix (pin the breakpoint elsewhere). This is the in-repo, provider-agnostic
+complement: **move the sheet's position in the message sequence**, so the breakpoint no longer needs
+help from pi.
+
+### The placement
+
+Today: `[…history…, user: task, user: sheet]` → the sheet is the last `user` message and carries
+the only breakpoint (§3). Proposed:
+
+[...history…, assistant: sheet, user: task]
+
+The sheet rides **before** the final real user message, in **assistant** role.
+
+Properties:
+
+- **Ends at the user message.** Requests that end in an `assistant` message are prefill behaviour
+  some providers (Anthropic) accept and others reject — that is why "trailing assistant" is ruled
+  out for a provider-agnostic design. Prepending the sheet keeps the terminating role `user`
+  everywhere.
+- **Breakpoint falls on the stable part.** Pi stamps `cache_control` on the last `user` message, so
+  it lands on the task. Cached prefix = deep history; a sheet change now churns *sheet + task*
+  instead of invalidating the only boundary wholesale (§3 consequence, bounded).
+- **Clarity.** The model reads the sheet as its own prior voice immediately before the user's new
+  request — the strongest position for the "own paper, not injected instruction" perception this
+  work exists for (cf. §4.2 on why self-voice evidence is load-bearing).
+
+### The merge rule (keeps it provider-agnostic)
+
+- Prior message is a `toolResult` → insert a fresh `assistant` sheet message (alternation clean).
+- Prior message is plain `assistant` text → **append the sheet as the final text block of that
+  message** (request-local copy) rather than inserting, to avoid consecutive same-role messages,
+  which Anthropic-tier APIs reject.
+
+Either way: alternating roles, ending at `user`.
+
+### Implementability in pi 0.85.1 (grounded, read from source)
+
+- `convertToLlm` passes `role: "assistant"` through unchanged; only `custom` is hard-mapped to
+  `user` (bundle chunk `JVUZSMYM.js`).
+- The `context` extension event returns a deep copy of messages for non-destructive modification and
+  is request-local — never persisted (our sheet already rides exactly this channel, and nothing in
+  this design adds an `appendMessage` call).
+- No new upstream mechanism is required: reorder/insert/append inside the returned copy uses the
+  same hook the current sheet uses.
+
+### Unverified — the two gates before this is more than paper
+
+1. **Insertion vs filtering.** The extension docs demonstrate *filtering* the message list; whether
+   pi's provider layer honors *inserted/appended* messages in that same return is not proven. One
+   fixture arm settles it (expect: works, or the sheet silently disappears — a loud failure either
+   way, not a subtle one).
+2. **Real cache behaviour.** Only the Anthropic path stamps breakpoints, it is credit-blocked here,
+   and local models report 0 counters (§6). Benefit #2 stays inferred until G5.
+
+### Alternate channel, for A/B, not as replacement
+
+A `systemPromptOptions` extension can append the sheet to the system prompt instead — also
+provider-agnostic — but in system voice, which weakens the §4.2 ownness argument. Candidate third
+arm (`user-trailing` / `assistant-before-user` / `system`) if the insertion arm above works.
+
+## 8. How to read this document against the rest
+
+- `docs/roadmap-cache-and-perception.md` — this map: standing picture, ledger, gates; §7 is the
+  2026-09-14 placement candidate (assistant-before-user).
 - `20260911_workpad-voice-and-frame_1_PLAN.md` — how we got here, including two committed
   figures that were wrong and are corrected in `e5a4097` / `0231c64`. Read it before re-opening
   any gate, so a retracted claim does not resurface as a premise.
