@@ -129,8 +129,12 @@ run_step() {
   verify_controls
 }
 
-run_step A1 "SHEET_VALUE_STABLE"
-run_step A2 "SHEET_VALUE_STABLE"
-run_step B1 "SHEET_VALUE_CHANGED"
-run_step B2 "SHEET_VALUE_CHANGED"
+# Equal-length, run-unique tails prevent a replication from hitting an exact A or B
+# payload cached by an earlier experiment while preserving the one-tail-only control.
+TAIL_A="SHEET_A_${RUN_ID}"
+TAIL_B="SHEET_B_${RUN_ID}"
+run_step A1 "$TAIL_A"
+run_step A2 "$TAIL_A"
+run_step B1 "$TAIL_B"
+run_step B2 "$TAIL_B"
 echo "Raw evidence written to $LOG_FILE; it is structural evidence, not provider-causality proof."

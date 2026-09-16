@@ -29,18 +29,16 @@ unless the replacement is measured against all five requirements.
 
 ### 0.1 Current destination and decision boundary
 
-No redesign is selected. The current endpoint is an evidence-backed **hold**: keep the source at
-`8ab3870` and retain the live frontier sheet because frontier recency is the feature, not because
-any provider path has proved the layout universally cache-safe.
+No redesign is selected and the source remains at `8ab3870`. The current **hold** now means “do not
+ship an unmeasured fix,” not “no cache issue was found”: run-unique replications on Gemini 3.7 and 3.8
+reproduced a warm-prefix miss when only the synthetic trailing sheet changed.
 
-Implementation reopens only when at least one defined gate produces evidence:
+That provider-specific signal reopens the experimental path, not generic implementation. A source
+change still requires a controlled alternative that removes or materially reduces the miss without
+weakening frontier recency, self-ownership, actionable guidance, durability, or other provider paths.
+Concrete steering failures remain an independent gate.
 
-- provider-specific read or write harm attributable to the sheet;
-- a concrete steering failure, such as stale state acted on or next actions dropped; or
-- a controlled alternative that improves self-ownership without weakening recency, actionable
-  guidance, durability, or provider portability.
-
-Until then:
+While that follow-up is pending:
 
 - do not remove the live sheet for cache tidiness;
 - do not generalize one provider's result to another or reorder messages on speculative cache benefit;
@@ -49,7 +47,8 @@ Until then:
 - do not modify `src/` without a gate signal and an acceptance test covering the affected requirement.
 
 Assistant-before-user and system-prompt placement remain experimental arms only, not chosen designs.
-The next legitimate work is to collect gate evidence or leave the implementation unchanged.
+The next legitimate cache work is to compare those arms with the current tail layout on the exact
+Gemini 3.7/3.8 routes while preserving all five requirements.
 
 ---
 
@@ -106,8 +105,8 @@ IDs / 711 model entries** is maintained in `docs/cache-test-matrix.md`.
 | Anthropic Messages | Explicit `cache_control` on system/tools and the last block of the last `user` message | One controlled direct Haiku 4.5 run retained 4,338 cached prefix tokens and wrote 44 when only the synthetic tail changed; its repeat read 4,382. Provider/model-specific, not universal. |
 | Bedrock Converse + supported Claude | Explicit system and final-user `cachePoint` blocks | Same placement concern, but no project measurement. Nova is documented in Pi source as automatic instead. |
 | OpenAI Responses / Codex / GitHub Copilot | Pi sends a session-derived `prompt_cache_key`; no Anthropic-style per-message marker | The historical Codex sample showed no read cliff. One controlled Copilot Terra run with a fixed key retained 7,132 cached prefix tokens and wrote 20 across the tail change; its repeat read 7,152. |
-| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Exact models differed: Gemini 3.5 retained 4,074 across A2→B1; 3.8 had A2 hit→B1 miss→B2 hit; 3.6 never hit; 3.7 and 2.5 were B2-only. |
-| OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Wafer DeepSeek V4 Flash first reported reuse on changed-tail B1 (6,912); Cerebras qwen-3.8-27b had an A2 hit, B1 miss, then B2 hit (7,168). Other providers and siblings remain unmeasured. |
+| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Exact models differed: 3.5 retained 4,074; run-unique replications confirmed first-B misses for 3.7 and 3.8; 3.6 repeatedly never hit; 2.5 was B2-only twice. |
+| OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Wafer DeepSeek V4 Flash retained 6,912 on first B in two valid runs. Cerebras qwen-3.8 had one first-B miss, then two run-unique 7,168-token first-B hits. Other providers and siblings remain unmeasured. |
 
 Official provider documentation agrees on the important boundary, not on one common mechanism:
 Anthropic supports automatic caching or block-level explicit breakpoints; OpenAI reuses eligible
@@ -131,23 +130,27 @@ session format can carry those counters. None of the three files contains a mini
 result, and no serialized request payload was persisted, so they provide **zero workpad-tail evidence**.
 
 **Measured Gemini probes, bounded and model-specific:** all exact payload controls passed. Gemini
-3.5 Flash reported `4074` cached tokens on A2, first B, and B2, directly retaining its reported prefix
-across the changed tail. Gemini 3.8 Flash instead reported `4074` on A2, zero on first B, and `4074`
-on B2: a controlled first-B miss. Gemini 3.6 Flash reported no hits, while 3.7 Flash reported only a
-`4074` B2 hit. The two earlier 2.5 Flash runs likewise produced only B2 hits (`6111`). These differences
-for one provider ID forbid a provider-wide Gemini verdict; zero or delayed hits can reflect model policy,
-propagation, or routing rather than payload drift.
+3.5 Flash retained `4074` cached tokens across first B. Gemini 3.7 and 3.8 each produced two valid,
+run-unique A2 `4074` hit → first-B zero → B2 `4074` hit sequences: their first-B misses are replicated,
+not one-off payload drift. Gemini 3.6 reported no hits in both its original and run-unique repeat. The
+two earlier 2.5 Flash runs produced only B2 hits (`6111`). These differences under one provider ID
+forbid a provider-wide verdict; the harness does not reveal whether the repeated misses arise from
+model-specific prefix matching, routing, or provider policy.
 
-**Measured OpenAI-compatible probes, bounded and model-specific:** Wafer DeepSeek V4 Flash reported
-no A2 hit but read `6912` cached tokens on the first never-before-sent B request and again on B2, with
-only `256` uncached input. Cerebras qwen-3.8-27b reported an A2 `7168` hit, zero on first B, then a B2
-`7168` hit. Both passed exact A/B payload controls. The Wafer result supports prefix preservation on
-that route; the Cerebras result is an adverse first-B observation requiring replication, not a rule for
-its two sibling models.
+**Measured OpenAI-compatible probes, bounded and model-specific:** Wafer DeepSeek V4 Flash retained
+`6912` cached prefix tokens on first B in both the original first-ever-tail run and a run-unique repeat.
+Cerebras qwen-3.8-27b produced one original A2 `7168` hit → B1 zero → B2 `7168` hit sequence, followed
+by two run-unique replications that retained `7168` on first B. The Cerebras miss is therefore real but
+not deterministic. Its two sibling models remain untested.
 
-**Still unknown:** Bedrock behavior with the volatile explicit final-user breakpoint; replication and
-external validity of the exact-model runs; real-workpad write amplification outside the synthetic
-fixture; and the cause and stability of the observed first-B misses. Therefore:
+**Replication correction:** the first repeat batch reused the original literal A/B tail values. Because
+those exact payloads could hit prior-run cache entries, those five complete sequences are retained only
+as calibrations and excluded from A→B classification. The harness now derives equal-length A/B tails
+from the unique run ID; all replication claims above use those contamination-resistant runs.
+
+**Still unknown:** Bedrock behavior with the volatile explicit final-user breakpoint; external validity
+outside the exact routes/build; real-workpad write amplification outside the synthetic fixture; why
+Gemini 3.7/3.8 consistently miss first B; and why Cerebras routing is mixed. Therefore:
 
 - do not claim that the transient tail kills caching;
 - do not transfer Codex cache results to Anthropic, Bedrock, Gemini, or compatible APIs;
@@ -168,11 +171,6 @@ fixture; and the cause and stability of the observed first-B misses. Therefore:
 
 ### 4.2 ACCEPTED — will not be solved here
 
-- **Current tail placement.** It preserves frontier recency, showed no read-side re-read cliff on
-  the historical OpenAI Codex path, and retained the stable prefix with only a small tail write in
-  one controlled direct-Anthropic run (44 tokens) and one Copilot-Terra run (20 tokens). Keep it
-  unless replicated provider-specific evidence demonstrates material harm; Bedrock remains open,
-  and explicit boundary control is possible upstream work rather than a proven generic fix.
 - **Duplicate copies in ①.** Full snapshots stay in every historical `tool_call` arg. Their
   persisted size was 0.48% in the measured session, and no behavioral or provider-cost harm has
   been demonstrated. Slimming them would also remove the model's own record of what it wrote,
@@ -181,6 +179,10 @@ fixture; and the cause and stability of the observed first-B misses. Therefore:
 
 ### 4.3 OPEN — needs a run, not more reading
 
+- **Provider-specific tail misses on Gemini 3.7/3.8.** Two run-unique sequences per exact model
+  reproduced A2 hit → first-B miss → B2 hit when only the synthetic final sheet changed. Compare the
+  current layout with assistant-before-user and system-prompt arms on these routes; do not change
+  `src/` until one arm improves cache behavior without failing the five requirements.
 - **Whether framing changes the acknowledgement tic, and why the tic concentrates.** Workpad-active
   sessions show a strong association (**3.4%** vs **0.0%** across 64,613 assistant messages without
   it), but the observational cohorts do not prove causality. Natural sessions also cannot isolate
@@ -229,7 +231,7 @@ the default stays *hold* until data says otherwise.
 | **G2** | Re-measure workpad bytes / session bytes and read cliffs **per adapter/model** | Whether the sheet has become worth engineering for on a specific provider path | Read-only over session data; never pool provider paths |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
 | **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
-| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Retention: Haiku, Copilot Terra, Wafer, Gemini 3.5. First-B misses: Cerebras qwen-3.8 and Gemini 3.8. Delayed/no-hit: Gemini 2.5/3.7 and 3.6. Bedrock unrun; never pool paths. |
+| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Retention: Haiku, Copilot Terra, Wafer, Gemini 3.5. Replicated first-B misses: Gemini 3.7/3.8. Mixed: Cerebras qwen-3.8. Delayed/no-hit: Gemini 2.5/3.6. Bedrock unrun; never pool paths. |
 
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
@@ -325,20 +327,21 @@ input without replaying conversation history. The controlled run then passed eve
 read 7,153 tokens; after only the tail changed, B1 read 7,132 and wrote 20; B2 read 7,152. This is
 bounded evidence against the reported full-cache-loss concern on this exact path and build.
 
-**Gemini:** the two earlier 2.5 Flash runs and requested 3.5, 3.6, 3.7, and 3.8 Flash runs passed
-every structural control. Outcomes differ by exact model: 3.5 retained a 4,074-token read across
-A2→B1; 3.8 produced A2 hit→B1 miss→B2 hit; 3.6 never hit; 3.7 and 2.5 were B2-only. The provider ID
-therefore has **mixed** evidence, not one pooled result.
+**Gemini:** all requested runs and run-unique replications passed every structural control. Outcomes
+differ by exact model: 3.5 retained `4074` across A2→B1; 3.7 and 3.8 each reproduced A2 `4074` hit
+→ B1 zero → B2 `4074` hit in two valid sequences; 3.6 repeatedly never hit; 2.5 was B2-only twice.
+The provider ID therefore has **mixed** evidence, with replicated adverse behavior on 3.7 and 3.8.
 
-**OpenAI-compatible endpoints:** Wafer's only listed model, `DeepSeek-V4-Flash-0731-Fast`, first
-reported reuse on the changed-tail B1 (6,912) and repeated it on B2. Cerebras `qwen-3.8-27b` produced
-a controlled A2 hit→B1 miss→B2 hit sequence (7,168). Its `gemma-4-31b` and `gpt-oss-120b` siblings
-remain untested. An initial Wafer A1 rejected unsupported `minimal` reasoning and safely stopped; the
-successful runs used `low`.
+**OpenAI-compatible endpoints:** Wafer's only listed model, `DeepSeek-V4-Flash-0731-Fast`, retained
+`6912` on first B in the original and a run-unique replication. Cerebras `qwen-3.8-27b` produced one
+first-B miss followed by two run-unique `7168`-token first-B hits, so its behavior is mixed rather than
+a deterministic tail failure. Its `gemma-4-31b` and `gpt-oss-120b` siblings remain untested. An initial
+Wafer A1 rejected unsupported `minimal` reasoning and safely stopped; successful runs used `low`.
 
-G5 still supports the existing **hold**: favorable exact-model runs do not establish universal safety,
-and adverse Cerebras/Gemini 3.8 observations need replication before they justify changing generic
-message placement. Bedrock and future-build behavior remain open; no `src/` change is signalled.
+G5 now triggers a **provider-specific follow-up** for Gemini 3.7/3.8: the first-B miss is replicated
+and cannot be dismissed as one anomalous run. It still does not select a generic source change because
+no alternative placement has been measured against semantic requirements or other providers. Keep
+`src/` frozen while testing candidate layouts on these exact routes; Bedrock and future builds remain open.
 
 **Harness boundary:** Pi's supported `before_provider_request` hook is observational; extension errors
 are caught and cannot abort before the first transport. A1 is therefore an explicit one-call canary.

@@ -10,16 +10,17 @@
     },
     "runner": {
       "path": "test-lab/cache-probe-run.sh",
-      "sha256": "7a2d9da933936ea4d4d5d1403228d97748e4eb2313c5740f403cec8f27ed0c49"
+      "sha256": "91528e4fd21caf714d66d375cba8aa6060d659914a124bf9a2b8724b8a6eaab3"
     },
-    "versionNote": "The six Wafer, Cerebras, and Gemini 3.5\u20133.8 runs used these exact harness hashes. Earlier runs used the reviewed hashes recorded in repository history; subsequent profile additions did not alter their payload construction, hashing, or usage paths.",
+    "versionNote": "The seven contamination-resistant fresh-tail replications used these exact harness hashes. Earlier controlled runs used the reviewed harness hashes recorded in repository history. Five intervening fixed-tail repeats are retained as calibrations only because their exact A/B payloads could reuse prior-run entries.",
     "controls": [
       "A1 and A2 raw payload hashes must match",
       "B1 and B2 raw payload hashes must match",
       "A and B raw payload hashes must differ",
       "all hashes after replacing exactly the controlled tail must match",
       "Copilot additionally requires one stable serialized prompt_cache_key across all four calls",
-      "OpenAI Completions profiles additionally require the exact model, one 32 KiB system anchor, and exactly one controlled trailing sheet"
+      "OpenAI Completions profiles additionally require the exact model, one 32 KiB system anchor, and exactly one controlled trailing sheet",
+      "Replication runs use equal-length, run-unique A/B tails so an exact payload from an earlier experiment cannot satisfy the current run"
     ]
   },
   "calibrations": [
@@ -73,6 +74,256 @@
       },
       "stopReason": "The endpoint rejected reasoning_effort minimal before generation; the fail-closed runner sent no later steps.",
       "correction": "The final Wafer and Cerebras profile uses the lowest common supported reasoning level, low."
+    },
+    {
+      "runId": "g5-wafer-deepseek-replication-20260916",
+      "provider": "wafer",
+      "model": "DeepSeek-V4-Flash-0731-Fast",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-wafer-deepseek-replication-20260916.jsonl",
+        "sha256": "c0fa6e0c33fc1102c3be2eb7c7a81c1f7939dcc460ceb60ce3409aa1cc75e1b0"
+      },
+      "completedSteps": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 255,
+          "output": 43,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 255,
+          "output": 11,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 7168,
+          "output": 28,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 256,
+          "output": 114,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "Complete structural run, but excluded from causal A-to-B classification because its fixed A and B tail values exactly repeated earlier payloads for the same provider/model and could hit prior-run cache entries.",
+      "correction": "Subsequent replications use equal-length tail values containing the unique run ID.",
+      "causalClassificationEligible": false
+    },
+    {
+      "runId": "g5-cerebras-qwen38-replication-20260916",
+      "provider": "cerebras",
+      "model": "qwen-3.8-27b",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-cerebras-qwen38-replication-20260916.jsonl",
+        "sha256": "b5789d0a29a057d89f1bffe53ecd047c34e54ba14e66c81b5660982229b4ac10"
+      },
+      "completedSteps": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 7202,
+          "output": 16,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 34,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 33,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 33,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "Complete structural run, but excluded from causal A-to-B classification because its fixed A and B tail values exactly repeated earlier payloads for the same provider/model and could hit prior-run cache entries.",
+      "correction": "Subsequent replications use equal-length tail values containing the unique run ID.",
+      "causalClassificationEligible": false
+    },
+    {
+      "runId": "g5-google-gemini36-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini36-replication-20260916.jsonl",
+        "sha256": "d95fda62f6a96233b3b59ac5183396866cd1e19a4ce8aba6d12e4bcd629fd6ae"
+      },
+      "completedSteps": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 86,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6684,
+          "output": 199,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 309,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 6683,
+          "output": 69,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "Complete structural run, but excluded from causal A-to-B classification because its fixed A and B tail values exactly repeated earlier payloads for the same provider/model and could hit prior-run cache entries.",
+      "correction": "Subsequent replications use equal-length tail values containing the unique run ID.",
+      "causalClassificationEligible": false
+    },
+    {
+      "runId": "g5-google-gemini37-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.7-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini37-replication-20260916.jsonl",
+        "sha256": "abb5a27da232073cac0fe0262505fb39d56824fe49e913eef05cabe72abff0b9"
+      },
+      "completedSteps": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 168,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2610,
+          "output": 167,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 30,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2609,
+          "output": 30,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "Complete structural run, but excluded from causal A-to-B classification because its fixed A and B tail values exactly repeated earlier payloads for the same provider/model and could hit prior-run cache entries.",
+      "correction": "Subsequent replications use equal-length tail values containing the unique run ID.",
+      "causalClassificationEligible": false
+    },
+    {
+      "runId": "g5-google-gemini38-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.8-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini38-replication-20260916.jsonl",
+        "sha256": "bb928430614e063131affaca1d56fb56cab2d6352aad75ecccbc863216bf3711"
+      },
+      "completedSteps": [
+        "A1",
+        "A2",
+        "B1",
+        "B2"
+      ],
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 2093,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2610,
+          "output": 332,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 30,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2609,
+          "output": 806,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "Complete structural run, but excluded from causal A-to-B classification because its fixed A and B tail values exactly repeated earlier payloads for the same provider/model and could hit prior-run cache entries.",
+      "correction": "Subsequent replications use equal-length tail values containing the unique run ID.",
+      "causalClassificationEligible": false
     }
   ],
   "runs": [
@@ -573,22 +824,379 @@
       },
       "outcome": "CONTROLLED MISS",
       "boundary": "A2 read 4,074 cached tokens, first-B read zero, and B2 read 4,074. This exact run observed a warm-prefix miss after the tail change; it does not establish universal Gemini behavior."
+    },
+    {
+      "runId": "g5-wafer-deepseek-fresh-replication-20260916",
+      "provider": "wafer",
+      "model": "DeepSeek-V4-Flash-0731-Fast",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-wafer-deepseek-fresh-replication-20260916.jsonl",
+        "sha256": "b6b63491763a35ebe452ab11574d3ddcc36327aff65cfdc69ddc810e1399b3e1"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "8f24367895ea75104661b663771cb8177586c12429ca539769adadf15694432a",
+        "bRawPayloadHash": "e95255a72f463aa93ffb7d62fa6088d20b1a421a342e82fce6a8cf9e0b12aae1",
+        "canonicalControlHash": "ef092d798d96236eee63094912b2c5b432555bb5e7c8dac8e4a5c69fcaaede41",
+        "a1PromptTokens": 7181,
+        "b1PromptTokens": 7181,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 269,
+          "output": 4,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 13,
+          "output": 17,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 269,
+          "output": 15,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 13,
+          "output": 5,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED PASS",
+      "boundary": "Run-unique tails: B1 retained 6,912 cached prefix tokens and B2 read 7,168. Together with the original first-ever-tail run, this replicates changed-tail prefix reuse; the fixed-tail repeat remains non-causal calibration only.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-cerebras-qwen38-fresh-replication-20260916",
+      "provider": "cerebras",
+      "model": "qwen-3.8-27b",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-cerebras-qwen38-fresh-replication-20260916.jsonl",
+        "sha256": "6085c55bbf4f35cfbb4bd04b58fb15a8916599bb94039b0666c5c656a57d1401"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "bcedc7121dfdab8d75cc503a9e9867c70771b7105643e35c4a4f55fcb1ca321b",
+        "bRawPayloadHash": "ceca994f507d3fdf9a70bd7ee5a41477b16081fa8888fd6a416e5607677a26c4",
+        "canonicalControlHash": "43539ab522e96d471729971b311934b63b139abf2a6243c67ab282337802a344",
+        "a1PromptTokens": 7222,
+        "b1PromptTokens": 7222,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 54,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 54,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 54,
+          "output": 34,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 54,
+          "output": 58,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED PASS",
+      "boundary": "Run-unique tails: all four calls read 7,168 cached prefix tokens, including first B.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-google-gemini36-fresh-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini36-fresh-replication-20260916.jsonl",
+        "sha256": "74d752990b7e18e8337780d00593f2ff8fc350818fb3b1e84b857308468383f7"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "4cb24302047018e6d544fa12a53fedfd2750edd5de2b98f69ef4308ee92adec5",
+        "bRawPayloadHash": "4eb769f66151cd6f92a41ab6a724f73b4b66985f20078a331e5abcdb8359768b",
+        "canonicalControlHash": "7cb13dd7c8ea2c0acf784237ec3a027b2f38b3d8f1fea667f5054239af0d5eb3",
+        "a1PromptTokens": 6704,
+        "b1PromptTokens": 6704,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6704,
+          "output": 120,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6704,
+          "output": 219,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6704,
+          "output": 172,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 6704,
+          "output": 133,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "NO HIT OBSERVED",
+      "boundary": "Run-unique tails: all four calls again reported zero cacheRead, replicating the original no-hit observation but not distinguishing disabled caching from unreported or provider-managed behavior.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-google-gemini37-fresh-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.7-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini37-fresh-replication-20260916.jsonl",
+        "sha256": "f51f1d79cd4a3737dc66d2888aab5f98a99e2b8a36336b1478633a5310426047"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "3c5f81417cc083c05941ed2ac7f2520c04817fa4b133fd16d765f4615c1014cc",
+        "bRawPayloadHash": "35e42b3672a611e3349df66f160972a63a34dd834e5387da119066337cc8694b",
+        "canonicalControlHash": "b2c7f9b57ee9a090b2664b246879c985c8727896b12fd17fd29759717b975434",
+        "a1PromptTokens": 6704,
+        "b1PromptTokens": 6704,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6704,
+          "output": 163,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2630,
+          "output": 250,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6704,
+          "output": 729,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2630,
+          "output": 961,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED MISS",
+      "boundary": "Run-unique tails: A2 read 4,074, first B read zero, and B2 read 4,074.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-google-gemini38-fresh-replication-20260916",
+      "provider": "google",
+      "model": "gemini-3.8-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini38-fresh-replication-20260916.jsonl",
+        "sha256": "44f947a4d78c6041d78c1503f23f129d75f04505dc870fadc646da9a8fbe3938"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "b3e89ecfd7dafc2a51872910ad0561fe8beb809ed41ad307630575ce4d9ce86d",
+        "bRawPayloadHash": "8e9e2e8e049b0b14a0675e24376666314ffdd658d63be1b652654c038783a45b",
+        "canonicalControlHash": "4897996dfabf151627c71727065f1394311ca41be80c4f96fd55e7da0a4cfac2",
+        "a1PromptTokens": 6704,
+        "b1PromptTokens": 6704,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6704,
+          "output": 288,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2630,
+          "output": 768,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6704,
+          "output": 141,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2630,
+          "output": 902,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED MISS",
+      "boundary": "Run-unique tails: A2 read 4,074, first B read zero, and B2 read 4,074, independently reproducing the original controlled miss.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-cerebras-qwen38-fresh-replication2-20260916",
+      "provider": "cerebras",
+      "model": "qwen-3.8-27b",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-cerebras-qwen38-fresh-replication2-20260916.jsonl",
+        "sha256": "b80282ed8764f6e473fb18dcee2be9d5bc4c8712de6114f4e73efa645b8aadb2"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "3201839613cc9a156390269627dd296696f74693beef9e7c972d9ab3322164c6",
+        "bRawPayloadHash": "247544ed20a2b84bbeba7e4190d9723c8650fc30758898d51784998bc717e1ad",
+        "canonicalControlHash": "43539ab522e96d471729971b311934b63b139abf2a6243c67ab282337802a344",
+        "a1PromptTokens": 7223,
+        "b1PromptTokens": 7223,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 55,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 55,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 55,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 55,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED PASS",
+      "boundary": "Second run-unique replication: all four calls again read 7,168 cached prefix tokens, including first B. The exact model therefore has two fresh-tail passes after one original miss.",
+      "causalClassificationEligible": true
+    },
+    {
+      "runId": "g5-google-gemini37-fresh-replication2-20260916",
+      "provider": "google",
+      "model": "gemini-3.7-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini37-fresh-replication2-20260916.jsonl",
+        "sha256": "3c939123cd70c159ff2b0da8a2ead7999eaf7117c6de81f3961820a70b5808d1"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "114699c4cef37a0680ff62795b7024915e95178d96b7eba17593188101cd5c23",
+        "bRawPayloadHash": "b4bf402e7817d8f7afe09fe293c2fc1735584fe8638ddc848fcec5b41520f1eb",
+        "canonicalControlHash": "b2c7f9b57ee9a090b2664b246879c985c8727896b12fd17fd29759717b975434",
+        "a1PromptTokens": 6705,
+        "b1PromptTokens": 6705,
+        "aBPromptTokenTotalsEqual": true
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6705,
+          "output": 667,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2631,
+          "output": 172,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6705,
+          "output": 109,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2631,
+          "output": 716,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED MISS",
+      "boundary": "Second run-unique replication: A2 read 4,074, first B read zero, and B2 read 4,074, reproducing the first fresh-tail miss.",
+      "causalClassificationEligible": true
     }
   ],
   "conclusion": {
     "established": [
-      "The controlled Copilot GPT-5.6 Terra run retained 7132 cached prefix tokens when only the trailing sheet changed and reported a 20-token cache write; the repeat read 7152 cached tokens.",
-      "The controlled direct Anthropic Haiku 4.5 run retained 4338 cached prefix tokens when only the explicitly marked trailing sheet changed and reported a 44-token cache write; the repeat read 4382 cached tokens.",
-      "Wafer DeepSeek V4 Flash reported a 6912-token cache read on the first changed-tail B request and again on B2, despite no reported A2 hit.",
-      "Cerebras qwen-3.8-27b reported a 7168-token A2 hit, a zero-hit first-B miss, then a 7168-token B2 hit.",
-      "Gemini 3.5 Flash retained a 4074-token reported cache read across A2, first B, and B2; Gemini 3.8 Flash instead reported an A2 hit, first-B miss, and B2 hit.",
-      "Gemini 3.6 Flash reported no hits; Gemini 3.7 Flash and both earlier Gemini 2.5 Flash runs reported only delayed B2 hits."
+      "The controlled Copilot GPT-5.6 Terra run retained 7132 cached prefix tokens across the changed tail and reported a 20-token cache write; direct Anthropic Haiku 4.5 retained 4338 and wrote 44.",
+      "Wafer DeepSeek V4 Flash retained 6912 cached prefix tokens on first B in both the original first-ever-tail run and a run-unique replication.",
+      "Cerebras qwen-3.8-27b produced one original first-B miss followed by two run-unique replications that retained 7168 cached tokens on first B; behavior is mixed rather than a deterministic tail miss.",
+      "Gemini 3.7 Flash produced two run-unique A2-hit, first-B-miss, B2-hit sequences at 4074 tokens; Gemini 3.8 Flash produced the same controlled miss in its original and run-unique replication.",
+      "Gemini 3.6 Flash reported no cache hits in both its original and run-unique replication; Gemini 3.5 retained 4074 across first B; Gemini 2.5 remained B2-only in two runs."
     ],
     "notEstablished": [
       "Universal cache safety across providers, models, accounts, regions, prompts, or future Pi/provider builds.",
-      "A single provider-wide Gemini conclusion: the exact tested versions produced materially different controlled patterns.",
-      "Whether the Cerebras and Gemini 3.8 first-B misses are stable behavior across replications, routes, or cache propagation conditions.",
-      "Bedrock behavior or a reason to change the shipped workpad placement."
+      "That the replicated Gemini 3.7/3.8 first-B misses are caused specifically by message placement rather than model-specific cache matching, routing, or provider policy.",
+      "Whether Gemini 3.6 performs unreported backend caching despite exposing zero cacheRead in repeated controlled runs.",
+      "A deterministic Cerebras rule: one valid miss and two valid passes were observed on the same exact model.",
+      "Bedrock behavior or a reason to apply one provider-neutral source change."
     ]
   }
 }
