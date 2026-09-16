@@ -1,6 +1,6 @@
 # Workpad: cache handling vs. what the LLM perceives
 
-Decision map updated 2026-09-14. Source is unchanged at `8ab3870`.
+Decision map updated 2026-09-16. Shipped source is unchanged at `8ab3870`.
 Narrative history and the audit trail of retracted claims live in
 `20260911_workpad-voice-and-frame_1_PLAN.md`; this file is the current map.
 
@@ -123,9 +123,23 @@ Those 50 had median 1,122.5 uncached input tokens versus 1,438 on 428 ordinary f
 re-read cliff was not observed **on that Codex path**. The whole persisted workpad footprint
 was **0.48%** of the 7.93 MB session. The earlier label “Anthropic-path” was wrong.
 
+**Historical Anthropic counters exist, but not for this feature:** six Anthropic responses across
+three January 2026 session files include nonzero `cacheRead`/`cacheWrite` values, proving that the
+session format can carry those counters. None of the three files contains a mini-self-org call or
+result, and no serialized request payload was persisted, so they provide **zero workpad-tail evidence**.
+
+**Measured Gemini probe, bounded result:** two immediate, structurally controlled
+`google/gemini-2.5-flash` runs changed only a synthetic trailing-sheet value. Both runs produced the
+same provider-reported sequence: A1 `6684/0`, A2 `6684/0`, B1 `6683/0`, B2 `572/6111`
+(`input/cacheRead`; `cacheWrite` is always zero in Pi's Google adapter). Request hashes were equal
+within A and B, differed across A/B, and became equal across all four after redacting exactly the
+controlled tail. This proves Pi recorded Gemini implicit-cache reuse on the repeated B request. It
+does **not** show whether the A→B tail change preserved or discarded an already-warm prefix, because
+neither A request reported a hit; order, propagation delay, and provider-managed state remain confounded.
+
 **Still unknown:** Anthropic/Bedrock behavior with the volatile explicit final-user breakpoint;
-write-side amplification (`cacheWrite` was zero in the Codex sample); behavior on current builds;
-and workpad-specific results for Gemini and compatible APIs. Therefore:
+workpad-attributable write amplification; and tail-change effects on Gemini and compatible APIs.
+Therefore:
 
 - do not claim that the transient tail kills caching;
 - do not transfer Codex cache results to Anthropic, Bedrock, Gemini, or compatible APIs;
@@ -172,8 +186,9 @@ and workpad-specific results for Gemini and compatible APIs. Therefore:
 
 ### 4.4 BLIND — not observable today
 
-- **Anthropic write-side cache counters.** No successful Anthropic run is reachable with current
-  credentials, so explicit-final-user write cost is unknown rather than inferred from Codex zeros.
+- **Anthropic workpad-tail measurement.** A controlled A1 canary serialized both system and final-
+  message `cache_control`, then Anthropic returned `credit balance too low`; its usage counters were
+  zero and the fail-closed runner sent no later calls. The explicit-final-user cost remains unknown.
 - **Which pi build produced a past session.** Session files store schema `version: 3`, not a
   release, so the 0.48% sample is indicative rather than current.
 
@@ -202,11 +217,11 @@ the default stays *hold* until data says otherwise.
 
 | Gate | Experiment | Decides | Owner / reach |
 | --- | --- | --- | --- |
-| **G1** | Replay one long transcript against pre-fix and post-fix framing, varying nothing else | Whether wording matters at all — natural sessions cannot answer this, session-level variance swamps it | Local script + local models. Cheapest real answer available. **First attempt run 2026-09-11: too short and contaminated, see §6** |
+| **G1** | Run the staged OLD/NEW/OFF protocol in §6b with identical task seeds and clean trajectories | Whether injection or wording changes strict acknowledgement behavior | Baseline first; power a comparison only after observing a non-trivial event rate |
 | **G2** | Re-measure workpad bytes / session bytes and read cliffs **per adapter/model** | Whether the sheet has become worth engineering for on a specific provider path | Read-only over session data; never pool provider paths |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
 | **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
-| **G5** | Capture serialized payload plus cache read/write usage while changing only the sheet tail | Whether the transient tail causes read misses or write amplification on each adapter | Use `before_provider_request`; requires provider counters/credit |
+| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Gemini probe ran but did not isolate A→B effect; Anthropic is credit-blocked; never pool paths |
 
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
@@ -229,17 +244,82 @@ What the 2026-09-14 write-driving runs established, before the wording compariso
   **13** (NEW) across the completed 12-turn cerebras runs (§6a) — naming is not a necessity
   for this model. The local model's phrasing sensitivity remains an open question: it emitted no
   non-error output at all on 09-14, so there is no datum for it.
-- Preamble cost already settled separately: `NEW` framing is **−83 B/request** vs `OLD` (283 B vs
+- Preamble size already settled separately: `NEW` framing is **−83 B/request** vs `OLD` (283 B vs
   366 B), because the tool-name clause dropped (−161 B) outweighs the anti-acknowledgement clause
-  (+78 B). Wording was never a cost lever; only the tic rate is the open question, and it has not
-  been measured with the sheet delivered.
+  (+78 B). Size was never the behavior lever; acknowledgement rate remains open.
+- **The trajectories were not matched.** OLD recorded 100 requests, 62 home-llm errors, 21 Cerebras
+  errors, and context growth from 1→166 messages. NEW recorded 45 requests, 14 Cerebras errors,
+  and growth from 1→83. Each arm has 31 successful Cerebras responses, but equal successful counts
+  do not erase the different histories and retry/error exposure.
+- **`test-lab/tic-metrics.py` is historical exploratory tooling, not the decision metric.** It scans
+  strong and weak markers together and counts any `workpad`, `scratchpad`, or `mini-self-org` mention
+  as a `tic_turn` (`:36,108-115,132`). Loose mentions must remain secondary; they are not strict
+  acknowledgements.
 - Environment: macOS has no `timeout` binary (exit 127) — arm scripts must not gate on it.
 
-Status: the completed 12-turn cerebras runs (§6a) delivered the sheet but did **not** settle the
-wording question. Restating the sheet's field labels and explicit acknowledgments were 0 in both
-arms; the only signal is loose mention of "workpad/focus", 5/31 text blocks (OLD) vs 3/31 (NEW),
-too small for a verdict. NEW's only attributable edge is request size (−83 B/request). G1 remains
-open, and no `src/` change is signalled.
+Status: the completed 12-turn Cerebras runs delivered the sheet but did **not** settle the wording
+question. Strict acknowledgements were 0 in both arms; loose mentions were 5/31 (OLD) vs 3/31 (NEW),
+but the sample is small and the trajectories are contaminated. NEW's only attributable result is
+request size (−83 B/request). G1 remains open, and no `src/` change is signalled.
+
+## 6b. Contract for the next valid behavior experiment
+
+Do not retrofit a significance claim onto the contaminated runs, and do not fix a final sample size
+before establishing that identical neutral tasks produce a measurable baseline event rate.
+
+**Frozen controls for every arm:** commit and Pi build, fixture checksum, provider/model and sampling
+settings, tool set, neutral task corpus and seeds, scorer version, retry budget, and fresh-session policy.
+Run OLD, NEW, and OFF in randomized/interleaved order. A provider/config change, unequal retry handling,
+missing trace, or context-history divergence invalidates that replicate; do not pool providers.
+
+**Stage 1 — baseline gate:**
+
+- collect 50 scored generations per arm across fresh, balanced sessions using identical task seeds;
+- primary outcome is a pre-registered **strict semantic acknowledgement** rubric, rated blind by two
+  independent scorers, with disagreements adjudicated before unblinding;
+- report agreement, strict events, transport errors, workpad-call rate, task correctness, and loose
+  mentions separately; and
+- if OLD and OFF both remain below 5% strict acknowledgements (for example, ≤2/50), stop. Neutral tasks
+  do not expose the behavior often enough to test a reduction; design a pre-registered stress corpus
+  rather than declaring “no effect.”
+
+**Stage 2 — comparison only after the gate:** estimate the required OLD-vs-NEW sample from the observed
+baseline rate for 80% power at α=0.05. Pre-register the minimum meaningful absolute and relative effect
+then; do not use a fixed 5-point or 50% threshold when the baseline could make it impossible or undefined.
+Keep OFF as a reference for injection association.
+
+**Separate next-action experiment:** seed the same complete snapshot, apply identical intervening
+context/tool load, then ask for the next action without restating it. Compare complete list bodies with
+a pointer/omitted-body arm against a fixed oracle. Do not combine this with the framing experiment.
+
+## 6c. G5 runtime probe (2026-09-16)
+
+`test-lab/cache-probe.ts` and `test-lab/cache-probe-run.sh` are non-shipped measurement tooling;
+the bounded hashes, controls, counters, and limitations are persisted in
+`docs/cache-probe-evidence-2026-09-16.json`. They run four independent stateless requests: A1/A2
+with one synthetic sheet tail, then B1/B2 with
+another. A stable system anchor keeps the cacheable prefix above provider minimums. Every request
+records only hashes, lengths, structural shape, marker paths, and usage; no prompt text, headers, or
+credentials. Raw hashes must satisfy A1=A2, B1=B2, and A≠B, while a copy with exactly the expected tail
+replaced by a sentinel must hash identically across all four. Live execution requires an explicit
+confirmation string and stops between calls on missing or ambiguous evidence.
+
+**Anthropic:** the final-schema A1 artifact verifies `cache_control` at the system block and final
+message block, then records `stopReason:"error"` with zero usage; A2/B1/B2 were not sent. The live
+terminal additionally returned `credit balance too low`; that classification is explicitly stored as
+a terminal observation, not misrepresented as a JSONL field, in the bounded evidence file. This
+validates current request anatomy only, not cache cost.
+
+**Gemini:** two complete immediate runs on `google/gemini-2.5-flash` passed every structural control,
+with no explicit cache marker, exactly one changed tail, and the identical usage pattern shown in §3.
+The repeated B2 hit is reproducible provider-counter evidence. The A→B effect remains **undetermined**
+because A2 never hit in either run; a third ad hoc sequence was deliberately not run. No cache or
+delivery design gate moved.
+
+**Harness boundary:** Pi's supported `before_provider_request` hook is observational; extension errors
+are caught and cannot abort before the first transport. A1 is therefore an explicit one-call canary.
+The shell validates A1 before any later call. Do not add `process.exit`, malformed payloads, payload
+mutation, or other abort workarounds.
 
 ## 6. Measured: the first live A/B in this environment (2026-09-11)
 
@@ -352,6 +432,8 @@ arm (`user-trailing` / `assistant-before-user` / `system`) if the insertion arm 
 
 - `docs/roadmap-cache-and-perception.md` — this map: standing picture, ledger, gates; §7 is the
   2026-09-14 placement candidate (assistant-before-user).
+- `docs/cache-probe-evidence-2026-09-16.json` — bounded G5 harness hashes, structural controls,
+  usage counters, and non-causal conclusions; raw local JSONL paths are identified but ignored.
 - `20260911_workpad-voice-and-frame_1_PLAN.md` — how we got here, including two committed
   figures that were wrong and are corrected in `e5a4097` / `0231c64`. Read it before re-opening
   any gate, so a retracted claim does not resurface as a premise.

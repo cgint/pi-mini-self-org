@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "date": "2026-09-16",
+  "piRuntimeVersion": "0.85.1",
+  "scope": "Bounded structural and provider-reported usage evidence; not proof of cache causality.",
+  "harness": {
+    "extension": {
+      "path": "test-lab/cache-probe.ts",
+      "sha256": "ec83a75f4bdb920e55d035ada9d47636a062bb0e47c04dee5a205e0ed8e71d0a"
+    },
+    "runner": {
+      "path": "test-lab/cache-probe-run.sh",
+      "sha256": "531a02712ff5213f5b4f4a5ddc4527bb9b9515a354213f7428add45f71c023f6"
+    },
+    "versionNote": "The persisted harness hash is the final reviewed version. The two Google runs used the immediately preceding version; the only later code change strengthened Anthropic marker validation and did not change the Google profile, payload construction, hashing, or usage capture.",
+    "controls": [
+      "A1 and A2 raw payload hashes must match",
+      "B1 and B2 raw payload hashes must match",
+      "A and B raw payload hashes must differ",
+      "all hashes after replacing exactly the controlled tail must match"
+    ]
+  },
+  "runs": [
+    {
+      "runId": "g5-anthropic-haiku-final-20260916",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-anthropic-haiku-final-20260916.jsonl",
+        "sha256": "3e95aed08843a5ba22af051282fb7692fb11c755b89d995148e86653c575af67"
+      },
+      "completedSteps": ["A1"],
+      "request": {
+        "validationOk": true,
+        "rawPayloadHash": "8e1864bbba7257e9b72cd8127a0312c59ff629ed05a5f3f94ea8eb7a3bcc1653",
+        "canonicalControlHash": "a9d6a7ffbe9024b4fd7a23b0bce77aa9111f632c5c3badb054196ed572a0fc7b",
+        "canonicalControlReplacements": 1,
+        "cacheMarkerPaths": [
+          "$.messages[1].content[0].cache_control",
+          "$.system[0].cache_control"
+        ]
+      },
+      "response": {
+        "stopReason": "error",
+        "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+      },
+      "terminalObservationNotPresentInRawLog": {
+        "errorType": "invalid_request_error",
+        "message": "Your credit balance is too low to access the Anthropic API."
+      },
+      "boundary": "Validates current serialized marker placement only. No cache-cost conclusion; A2/B1/B2 were not sent."
+    },
+    {
+      "runId": "g5-google-flash-20260916",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-20260916.jsonl",
+        "sha256": "e6827312c9472633d010e5fb7b3fcec515cad354ad461896b7d65643e5910dc9"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": []
+      },
+      "usageByStep": {
+        "A1": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
+        "A2": { "input": 6684, "output": 11, "cacheRead": 0, "cacheWrite": 0 },
+        "B1": { "input": 6683, "output": 40, "cacheRead": 0, "cacheWrite": 0 },
+        "B2": { "input": 572, "output": 28, "cacheRead": 6111, "cacheWrite": 0 }
+      }
+    },
+    {
+      "runId": "g5-google-flash-replication-20260916",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-replication-20260916.jsonl",
+        "sha256": "89929ac2dcecce2b88b13253572f099d2d98b0de4def45f8710f4d2da72790a9"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": []
+      },
+      "usageByStep": {
+        "A1": { "input": 6684, "output": 14, "cacheRead": 0, "cacheWrite": 0 },
+        "A2": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
+        "B1": { "input": 6683, "output": 40, "cacheRead": 0, "cacheWrite": 0 },
+        "B2": { "input": 572, "output": 40, "cacheRead": 6111, "cacheWrite": 0 }
+      }
+    }
+  ],
+  "conclusion": {
+    "established": [
+      "Current Pi serializes the synthetic Anthropic tail with system and final-message cache_control markers.",
+      "Both controlled Gemini runs reported the same B2-only 6111-token cacheRead pattern."
+    ],
+    "notEstablished": [
+      "Anthropic workpad-tail read or write cost.",
+      "Whether changing A to B preserved or invalidated a warm Gemini prefix, because A2 never reported a hit.",
+      "Any provider-independent cache conclusion or source-design gate."
+    ]
+  }
+}
