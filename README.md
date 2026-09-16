@@ -30,7 +30,17 @@ Use the workpad at meaningful state boundaries. When the overall goal, current f
 
 **Confidence tags:** Prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]` to label the confidence of a steering item — labels on plans and hypotheses, not an evidence log.
 
-The model receives one request-local current block per request, framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. It remains active until replaced or cleared.
+The model receives request-local current blocks framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. They remain active until replaced or cleared.
+
+### Injection policy
+
+`MINI_SELF_ORG_INJECTION` is parsed when the extension initializes. Its exact values are:
+
+- `always` (the default when unset) — inject every model request while the workpad is non-empty.
+- `user-boundary` — inject only on the first model request for each user-submitted agent loop.
+- `scheduled:N` — inject every positive-safe-integer `N` model requests since the last injection or successful workpad write; `scheduled:1` is equivalent to `always` for a non-empty workpad.
+
+Any other non-empty value is rejected during initialization. In `user-boundary` and `scheduled:N`, the first request after session start/resume, tree navigation, or successful compaction also injects. A successful workpad update or clear resets scheduled cadence. Empty workpads never inject, and stale transient blocks are removed on every request even when injection is suppressed. Autonomous tool loops therefore receive no repeated workpad block in `user-boundary`, and only receive it at their configured `scheduled:N` cadence.
 
 Pi serializes this block as the newest `user`-role message and keeps it last, so without framing it reads as something the human just typed and gets echoed back. It is therefore labelled as the agent's own recalled state, not a message from the user, and instructed not to restate it — reinforced both as a `promptGuidelines` bullet in the system prompt and in the block header. Tool-name mechanics are deliberately **excluded** from the block and live only in the tool description and guidelines, so the block carries state alone and stays byte-identical while the snapshot is unchanged. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 

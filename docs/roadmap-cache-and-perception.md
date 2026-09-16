@@ -1,6 +1,6 @@
 # Workpad: cache handling vs. what the LLM perceives
 
-Decision map updated 2026-09-16. Shipped source is unchanged at `8ab3870`.
+Decision map updated 2026-09-16. Default injection remains `always`; opt-in deterministic policies are implemented for measurement.
 Narrative history and the audit trail of retracted claims live in
 `20260911_workpad-voice-and-frame_1_PLAN.md`; this file is the current map.
 
@@ -29,14 +29,15 @@ unless the replacement is measured against all five requirements.
 
 ### 0.1 Current destination and decision boundary
 
-No redesign is selected and the source remains at `8ab3870`. The current **hold** now means “do not
-ship an unmeasured fix,” not “no cache issue was found”: run-unique replications on Gemini 3.7 and 3.8
-reproduced a warm-prefix miss when only the synthetic trailing sheet changed.
+No default redesign is selected: unset configuration still injects on every model request. The current
+**hold** means “do not change that default without measurement,” not “no cache issue was found”:
+run-unique replications on Gemini 3.7 and 3.8 reproduced a warm-prefix miss when only the synthetic
+trailing sheet changed.
 
-That provider-specific signal reopens the experimental path, not generic implementation. A source
-change still requires a controlled alternative that removes or materially reduces the miss without
+That signal justified opt-in experimental delivery policies, not a generic default change.
+`MINI_SELF_ORG_INJECTION` now selects `always`, `user-boundary`, or `scheduled:N`; invalid values fail
+initialization. A default change still requires evidence that a conditional mode reduces misses without
 weakening frontier recency, self-ownership, actionable guidance, durability, or other provider paths.
-Concrete steering failures remain an independent gate.
 
 While that follow-up is pending:
 
@@ -44,11 +45,11 @@ While that follow-up is pending:
 - do not generalize one provider's result to another or reorder messages on speculative cache benefit;
 - do not use provider-payload surgery, fabricated tool events, or synthetic history as a workaround;
 - do not turn the workpad into project memory, an activity log, or a task tracker; and
-- do not modify `src/` without a gate signal and an acceptance test covering the affected requirement.
+- do not change the `always` default without cache and weak-model retention evidence.
 
 Assistant-before-user and system-prompt placement remain experimental arms only, not chosen designs.
-The next legitimate cache work is to compare those arms with the current tail layout on the exact
-Gemini 3.7/3.8 routes while preserving all five requirements.
+The next legitimate cache work is to compare `always`, `user-boundary`, and `scheduled:N` on Gemini
+3.7/3.8 and weaker models before deciding whether placement experiments are still necessary.
 
 ---
 
@@ -66,7 +67,7 @@ use different cache mechanisms, so this is request anatomy, not a universal cost
 ├────────────────────────────────────────────────────────────────────────────┤
 │ messages[N-1]      last REAL message (tool_result / user reply)             │
 ├────────────────────────────────────────────────────────────────────────────┤
-│ messages[N]        THE SHEET ③   role custom → user, appended last,          │
+│ messages[N]        THE SHEET ③ when policy injects; custom → user, last      │
 │   └─ cache_control EPHEMERAL ★   ← deepest message-level breakpoint          │
 │                    request-local: never persisted                            │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -79,11 +80,11 @@ Re-derived from source, not from memory:
 
 | Mechanic | Location |
 | --- | --- |
-| Injected block is removed and re-appended each turn, so exactly one sheet ever exists | `src/mini-self-org.ts:308-316` |
+| Existing transient blocks are removed on every request; the active policy decides whether exactly one current sheet is re-appended | `src/mini-self-org.ts:334-355` |
 | `role:"custom"` is converted to `role:"user"` on the way to the LLM | `chunk-JVUZSMYM.js`, `convertToLlm` |
 | Exactly one **message-level** `cache_control`, on the last block of the last message, and only if that message is `user` (separate tool/system markers may also exist) | `anthropic-messages-*.js`, `convertMessages` |
 | `toolResult.details` is never serialized into the provider request | same converter; `details` is absent from every emitted block type |
-| History reconstruction reads persisted `details`, and `getBranch` walks leaf→root over **all** entries | `src/mini-self-org.ts:112,165`; `session-manager.js:953-966` |
+| History reconstruction reads persisted `details`, and `getBranch` walks leaf→root over **all** entries | `src/mini-self-org.ts:119,170`; `session-manager.js:953-966` |
 
 ## 2. The three copies
 
@@ -91,7 +92,7 @@ Re-derived from source, not from memory:
 | --- | --- | --- | --- | --- |
 | ① | `tool_call` args of every past write | yes, inside the cached prefix | yes | **ACCEPTED** duplication. Also the only in-context proof the state is the agent's *own* prior act — see §4.2 |
 | ② | `toolResult.details.snapshot` | **never** | yes, survives compaction | **SOLVED.** Durable, invisible to the provider, and what reconstruction reads |
-| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Exact-model probes now include retained-prefix, delayed-hit, no-hit, and first-B-miss outcomes; Bedrock remains unmeasured. |
+| ③ | The injected sheet | yes, according to active policy | no | `always` preserves the prior frontier view; opt-in modes reduce frequency for measurement. It remains the deepest explicit marker in Pi's Anthropic adapter when present. |
 
 ## 3. Cache behavior: what is measured and what is not
 
@@ -180,9 +181,9 @@ Gemini 3.7/3.8 consistently miss first B; and why Cerebras routing is mixed. The
 ### 4.3 OPEN — needs a run, not more reading
 
 - **Provider-specific tail misses on Gemini 3.7/3.8.** Two run-unique sequences per exact model
-  reproduced A2 hit → first-B miss → B2 hit when only the synthetic final sheet changed. Compare the
-  current layout with assistant-before-user and system-prompt arms on these routes; do not change
-  `src/` until one arm improves cache behavior without failing the five requirements.
+  reproduced A2 hit → first-B miss → B2 hit when only the synthetic final sheet changed. First compare
+  opt-in `user-boundary` and `scheduled:N` with default `always` on these routes and weaker models;
+  retain the default until one mode improves cache behavior without failing the five requirements.
 - **Whether framing changes the acknowledgement tic, and why the tic concentrates.** Workpad-active
   sessions show a strong association (**3.4%** vs **0.0%** across 64,613 assistant messages without
   it), but the observational cohorts do not prove causality. Natural sessions also cannot isolate
@@ -209,7 +210,7 @@ the default stays *hold* until data says otherwise.
 
 ```
                      ┌──────────────────────────────────────────────┐
-   NOW ──────────────│ HOLD: src frozen at 8ab3870, 21 tests green  │
+   NOW ──────────────│ HOLD DEFAULT: always; opt-in modes, 26 tests green │
                      └───────────────────┬──────────────────────────┘
                                          │
       ┌──────────────────────────────────┼──────────────────────────────────┐
@@ -233,9 +234,9 @@ the default stays *hold* until data says otherwise.
 | **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
 | **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Retention: Haiku, Copilot Terra, Wafer, Gemini 3.5. Replicated first-B misses: Gemini 3.7/3.8. Mixed: Cerebras qwen-3.8. Delayed/no-hit: Gemini 2.5/3.6. Bedrock unrun; never pool paths. |
 
-**Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
-far were requested before the symptom they addressed had ever been measured, and both were
-withdrawn afterwards. The gate table exists to make that failure mode expensive to repeat.
+**Standing rule:** no default behavior change without a gate signal and acceptance evidence. G5
+provided the signal for opt-in mode implementation, not for changing the default. Earlier redesign
+proposals preceded measurement and were withdrawn; the gate table prevents that failure mode.
 
 ## 6a. Where the A/B actually stands (2026-09-14)
 
@@ -339,9 +340,9 @@ a deterministic tail failure. Its `gemma-4-31b` and `gpt-oss-120b` siblings rema
 Wafer A1 rejected unsupported `minimal` reasoning and safely stopped; successful runs used `low`.
 
 G5 now triggers a **provider-specific follow-up** for Gemini 3.7/3.8: the first-B miss is replicated
-and cannot be dismissed as one anomalous run. It still does not select a generic source change because
-no alternative placement has been measured against semantic requirements or other providers. Keep
-`src/` frozen while testing candidate layouts on these exact routes; Bedrock and future builds remain open.
+and cannot be dismissed as one anomalous run. Opt-in `user-boundary` and `scheduled:N` modes enable
+that comparison while unset configuration preserves `always`. No new default or alternate placement
+is selected; Bedrock and future builds remain open.
 
 **Harness boundary:** Pi's supported `before_provider_request` hook is observational; extension errors
 are caught and cannot abort before the first transport. A1 is therefore an explicit one-call canary.
