@@ -10,9 +10,9 @@ Three observed symptoms of how the workpad currently reaches the model:
 1. **"Alien information."** The injected block describes itself in detached third person
    ("Session-local, non-authoritative mini-self-org workpad"), so it reads as foreign content
    rather than the agent's own working state. Its targets feel external instead of self-owned.
-2. **Echoing.** The agent sometimes restates the workpad back to the user. Because the block is
-   serialized as a `user` message and is the newest message in the request, it looks like
-   something the human supplied and ought to be acknowledged.
+2. **Echoing.** The agent sometimes restates the workpad back to the user. A plausible mechanism
+   is its serialization as the newest `user` message, which can make it look like something the
+   human supplied and ought to be acknowledged; the observational data does not prove that cause.
 3. **Volatile content.** Short-lived status and transient facts get stored, turning a steering
    device into a fact-collection the context history already carries.
 
@@ -26,7 +26,7 @@ Three observed symptoms of how the workpad currently reaches the model:
 | The user prompt is pushed into context **before** the transform, so the workpad lands **after** the user's real input | `pi-agent-core/dist/agent-loop.js:113-118` |
 | `display: false` hides the block from the TUI only — `display` is never consulted when building the request | same `messages.js` branch |
 | Anthropic cache breakpoints are **explicit and multiple**: system prompt (OAuth: two blocks; non-OAuth: the single system block), the last tool when supported, and the last block of the last `user`-role message | `pi-ai/dist/api/anthropic-messages.js:800-827` (system), `:1133` (tools), `:1066-1076` (last user block) |
-| Because the system and tools prefixes carry their own breakpoints, a volatile tail cannot threaten them; losing only the history breakpoint costs the message history, not the whole request | same locations |
+| System and tools carry earlier explicit Anthropic breakpoints, so the final-user point is not the only possible reusable prefix; actual hit and billing effects remain empirical | same locations plus provider cache documentation |
 | A fabricated `toolResult` still serializes as `role: "user"` and needs a real `tool_use_id` | `anthropic-messages.js:1044-1062` |
 | `before_agent_start` fires once per user prompt; `systemPrompt` is then fixed for the run | `agent-session.js:914`, `agent-loop.js:43-51` |
 | `emitContext` clones the message array, so the injected block exists only for that one request and is never persisted | `pi-coding-agent/dist/core/extensions/runner.js:792` (`structuredClone`) |
@@ -75,19 +75,18 @@ request.
 
 `D2a:` keep the block **byte-stable while the snapshot is unchanged**. Only `content` is serialized
 to the provider (message `timestamp` is not), so the block text must not contain clocks, counters,
-or turn numbers. When the text is identical, the block itself sits inside the reusable prefix and
-costs nothing; a per-turn volatile byte makes the model re-read it on every call for no reason.
+or turn numbers. Stable text maximizes the reusable common prefix; the exact cache and billing effect
+of a volatile byte depends on the provider adapter and cannot be inferred from request shape alone.
 
 ### D3 — Rejected: repositioning it, or changing its role
 
-- **Insert before the last user message** (my earlier suggestion, retracted): on tool-loop turns
-  the real user prompt sits deep in history, so this moves cache divergence into the middle of the
-  tool log and re-writes it on every call.
+- **Insert before the last user message** (my earlier suggestion, retracted here but retained later
+  only as an experimental semantic arm): on tool-loop turns the real user prompt sits deep in history,
+  so this moves cache divergence earlier and may reduce reusable prefix length on automatic-prefix paths.
 - **`assistant`-role tail (prefill)**: reads as the agent's own voice, but `convertToLlm` passes it
-  through unchanged, `convertMessages` then finds a non-user last message, and the **conversation
-  history breakpoint disappears** — system and tool breakpoints survive, but the whole message
-  history (the bulk of a long session) stops being cached. It also changes generation semantics
-  (prefill), which is not a safe side effect for a state block.
+  through unchanged and Pi's Anthropic converter then emits no final-user conversation breakpoint.
+  System and tool points remain, but history reuse and behavior become provider-specific. It also
+  changes generation semantics (prefill), which is not a safe untested side effect for a state block.
 - **Fabricated `toolResult`**: still `role: "user"` at provider level and requires a live
   `tool_use_id`. Buys nothing.
 - **Snapshot in the system prompt only**: correct ownership, but `before_agent_start` is
@@ -151,9 +150,9 @@ ownership with less role confusion, and it is reviewed and test-pinned. Not re-l
 - README extended to describe the framing and the mechanics exclusion.
 
 **Status after `8ab3870`, updated 2026-09-11:**
-- Cache **read** side measured (below); the **write** side is not measurable from that data. What changed
-  is the inference: monotonicity is no longer treated as a cost lever, so the unmeasured write side no
-  longer gates candidate choice (see "Constraint under review").
+- Cache **read** side measured only on the historical Codex path (below); the **write** side and other
+  adapters are not measurable from that data. Formal monotonicity alone therefore cannot select a
+  candidate, but provider-specific write behavior remains an open gate (see "Constraint under review").
 - Independent review done: `cg-task.sh diff-review`, no defects.
 - Behaviour of the framing is live, but **"observed improving" is retracted** — see "Runtime caveat —
   RESOLVED" and the corrected echo measurement below. The impression of improvement came from comparing two
@@ -178,9 +177,9 @@ Measured in the installed `pi-ai` dist, 2026-09-11:
 with perfect provenance — as its own tool-call input. Only the *result text* is empty.
 
 **Consequence.** The request-local tail block therefore sends the same state a **second** time, in the
-user's voice. Two copies, two contradictory roles. This is a better explanation of the alien-information
-and echoing symptoms than wording was: trailing `user`-role content is read as an incoming instruction
-to acknowledge. It also means every workpad write leaves another full snapshot in history, so a 50-write
+user's voice. Two copies, two contradictory roles. This is a plausible explanation of the alien-information
+and echoing symptoms: trailing `user`-role content may be read as an incoming instruction to acknowledge.
+The session comparison below shows association, not controlled causality. It also means every workpad write leaves another full snapshot in history, so a 50-write
 session carries 50 snapshots plus one live tail copy.
 
 ### Constraint under review: "the cached prefix must be append-only" — downgraded from *governing*
@@ -190,12 +189,19 @@ all**, therefore the per-request tail block is a design fault whatever a provide
 statement of tidiness that is true. As a **cost lever it is wrong**, and cost is what it was invoked to
 protect.
 
-Appending content does not invalidate what is already cached. Prefix growth is unavoidable in any
-conversation and is priced once. The only real penalty is **re-reading content already sent**, and the
-read-side data below shows the tail does not cause it.
+Appending content need not invalidate an already cached common prefix, but the exact result is
+provider- and adapter-specific. The only sampled read path below is OpenAI Codex; it shows that the tail
+did not cause a full-context re-read there, not that all providers behave the same way.
 
 **Measured cost, 2026-09-11** — session `2026-08-30T12-02-37-198Z_01a0528c-*.jsonl`, 7.93 MB across 1095
-LLM messages; the only session among 910 with workpad activity:
+LLM messages; the only session among 910 with workpad activity.
+
+**Provider corrigendum, 2026-09-14:** this sample was repeatedly described below as an
+Anthropic-path measurement. Direct re-analysis shows all 524 assistant responses — including
+all 50 responses immediately after a workpad result — were
+`openai-codex/gpt-5.6-terra`. The byte totals remain valid, but cache conclusions apply only to
+that Codex path. They do not measure Pi's Anthropic or Bedrock explicit final-user breakpoints.
+The canonical provider matrix is now `docs/roadmap-cache-and-perception.md` §3.
 
 | Element | n | median | total |
 | --- | --- | --- | --- |
@@ -221,8 +227,9 @@ plus 33 permanent copies of substantially the same state.
   "overflow"` (`types.d.ts:453-461`). A hook at the moment context actually shrinks already exists.
 
 **Candidates** (verdicts below were set by the constraint above and are **revised** by the measurement):
-- **A** — status quo: full snapshot at the tail (what `8ab3870` ships). Formally non-monotonic; measured
-  cost is the block's own size. **Not eliminated on cost grounds after all.**
+- **A** — status quo: full snapshot at the tail (what `8ab3870` ships). Formally non-monotonic in
+  explicit-final-user adapters; the Codex sample observed only the block's own read-side size.
+  **Not eliminated on cost grounds after all, but unmeasured on other adapters.**
 - **B** — pointer tail: ≤3 lines instead of list bodies. A size trim, not a different shape; judged on
   cost it is merely a cheaper A.
 - **C** — no tail at all; state lives only as the agent's own `tool_use` history. Gives up the property
@@ -230,10 +237,10 @@ plus 33 permanent copies of substantially the same state.
 - **D — `DROPPED`, formerly recommended.** Its premise was that persisted writes are the expensive part.
   Measured 0.48% of session bytes; premise false. It also *increases* durable copies, which is the one
   cost the data does show.
-- **E — recommended, replaces D.** Keep the sheet at the frontier; remove the duplication instead.
-  Frontier recency is cheap and the byte-stability test from `8ab3870` means that between writes the
-  sheet is identical text, so it is not a per-turn cost at all. The measured waste is the *permanent*
-  duplicate: `tool_use` args carry the full snapshot on every write (`anthropic-messages.js:1028`).
+- **E — recommended at this point in the history; later withdrawn.** Keep the sheet at the frontier;
+  remove the duplication instead. The Codex sample found no repeated read cost while the sheet remained
+  byte-stable between writes; that conclusion does not transfer to other adapters. The measured durable
+  duplication was in `tool_use` args on every write (`anthropic-messages.js:1028`).
   So: sheet stays (goal + focus + next, trimmed); write args slim; durable anchor becomes
   **event-driven** — on focus transition and on `session_compact` — rather than per write.
 
@@ -265,16 +272,15 @@ Prior art confirms both mechanisms exist and differ: a sibling extension in this
 records — bulk state out, sparse durable events in.
 
 `Decision pending from the user:` was originally "is a permanent frontier anchor required?" — **answered**
-in favour of the sheet, on cost grounds now measured (the sheet is byte-stable between writes, so it is
-not a per-turn cost). What is actually pending is E's one prerequisite: **accept the schema change to
-partial updates**, since without merge semantics no arg-slimming is possible and the duplication is
-structural rather than careless.
+in favour of the sheet because frontier recency is the product requirement; the Codex sample merely found
+no repeated read cost while its text was stable. At this point in the history, E's prerequisite appeared
+to be a schema change to partial updates; E was later withdrawn, as recorded below.
 
 **Priced by the user, 2026-09-11:** cache integrity is paramount — "otherwise the bill will rise
 enormously." That ruling stands and is respected; what changes is the estimate of what threatens it. The
 ruling was recorded as *eliminating A and B*, and D as the survivor. **Both verdicts are withdrawn** —
-they rested on monotonicity-as-cost, refuted by the measurement above. The ruling still condemns designs
-that force re-reads; the tail does not do that.
+they rested on monotonicity-as-universal-cost, which the Codex sample did not support. The ruling still
+condemns designs that force re-reads; whether this tail does so remains adapter-specific.
 
 The user's own framing of the goal, which the measurements support: *"the idea is to keep the LLM sane,
 like a human being would have a sheet of paper with the most important points on the side while working
@@ -327,20 +333,17 @@ date, under both wordings**, so it tracks session length or compaction rather th
 **inconclusive**, not *improving* and not *met*.
 
 
-- `MEASURED — and it refuted the claim:` the transient tail does **not** break incremental cache reuse.
-  Sampled session, 50 requests immediately after a workpad write vs 428 ordinary follow-ups, compaction
-  requests excluded: uncached input median **1122** after a write vs **1438** on ordinary follow-ups
-  (mean 1417 vs 3040; max 13,812 vs 134,051), and `cacheRead` was non-decreasing in 47 of 49 consecutive
-  post-write comparisons. An orphaned checkpoint would have shown post-write uncached input at full
-  context size (~100k+); it never did. So a workpad write costs its own tokens and nothing else.
-  `Hypothesis for the mechanism:` Anthropic resolves cache reads against the longest matching prefix at
-  block granularity rather than strictly at the marked checkpoint, so a divergence confined to the tail
-  costs only the tail. The measurement is verified; that explanation is not.
-  `Caveat — stronger than first stated:` one session, one provider/model path, older pi build. The
-  `cacheWrite: 0` column is **not** a lookup artifact — the field is real (`types.d.ts:269`, mapped from
-  `cache_creation_input_tokens`) — yet it stays 0 while `cacheRead` passes 250k, so that build never
-  populated it. Write-side amplification is **neither confirmed nor excluded**; only reads were measured.
-  The append-only constraint stands on principle, not on this data.
+- `MEASURED — provider correction:` on the sampled **OpenAI Codex** path, the transient tail did
+  **not** produce a full-context read cliff. Across 50 responses immediately after a workpad result
+  versus 428 ordinary follow-ups (compaction requests excluded), uncached input median was **1122.5**
+  after a write versus **1438** on ordinary follow-ups (mean 1417 vs 3040; max 13,812 vs 134,051), and
+  `cacheRead` was non-decreasing in 47 of 49 consecutive post-write comparisons. All 524 assistant
+  responses in the session were `openai-codex/gpt-5.6-terra`; the earlier Anthropic mechanism
+  hypothesis was baseless and is retracted. This result does **not** test Anthropic/Bedrock explicit
+  final-user breakpoints or Gemini implicit caching.
+  `Caveat:` one session, one provider/model path, older pi build. The `cacheWrite: 0` column is real,
+  but on this Codex path it does not expose Anthropic's `cache_creation_input_tokens`. Write-side
+  amplification and cross-provider behavior are neither confirmed nor excluded.
 - `Verified instead of required:` the `before_agent_start` byte-identical concern is moot now that D1
   ships through `promptGuidelines`; pi owns that prefix and it changes only when the active tool set
   changes. The cache breakpoint on the system block (`anthropic-messages.js:800-827`) is why hand-
@@ -379,9 +382,10 @@ position; the sections above record how it was arrived at, including the claims 
 
 1. **"Writes are the real lever on your bill."** Wrong by roughly two orders of magnitude. In the only
    session with real activity (7.93 MB, 1095 LLM messages): 33 writes + 50 results = **37.9 KB = 0.48%**.
-   Therefore **monotonicity is not a cost lever** — appending grows the bill once; the only real penalty is
-   *re-reading*, and the read side shows no re-read cliff (median uncached **1,122** after a write vs
-   **1,438** on ordinary turns). Consequence: **D is dropped**; **A and B were never rightly eliminated**.
+   Therefore formal **monotonicity was not a demonstrated material cost lever on this Codex sample**:
+   it shows no re-read cliff (median uncached **1,122.5** after a write vs **1,438** on ordinary turns).
+   This does not establish Anthropic/Bedrock/Gemini behavior or write-side cost.
+   Consequence: **D is dropped**; **A and B were never rightly eliminated**.
 2. **"Compaction survival is untestable — 0 of 910 sessions."** My scan was faulty. Corrected: **118**
    sessions contain compaction, **1** has both compaction and workpad activity. The question also has a
    structural answer: `reconstructSnapshot` calls `getBranch()`, which walks leaf→root and *"includes all
@@ -392,12 +396,12 @@ position; the sections above record how it was arrived at, including the claims 
 ### Shape that survives
 
 Verified: `details.snapshot` persists on **33/33** results (median 666 B) and is **never serialized** to
-the provider, so the durable store is already decoupled from what is paid for; `reconstructSnapshot` reads
-*that*, not the args — slimming args is safe.
+the provider, so the durable store is decoupled from model input; `reconstructSnapshot` reads *that*, not
+the args. Slimming args is safe for reconstruction only; its behavioral/ownership effect is unmeasured.
 
 | Element | Decision | Why |
 | --- | --- | --- |
-| Live sheet at frontier | **Keep** | Byte-stable between writes → sits inside the cached prefix; it is the feature |
+| Live sheet at frontier | **Keep** | It is the feature; one Codex sample found no read cliff, while other provider paths remain unmeasured |
 | `tool_call` args | **Slim** | Currently the *only* model-visible duplicate (`anthropic-messages.js:1028`) |
 | `details.snapshot` | **Unchanged** | Durable, invisible to the provider, survives compaction |
 | `session_compact` anchor | **Optional** | Durability already holds via `getBranch` |
@@ -412,8 +416,8 @@ merge semantics first — a schema change, not a wording change.
 ### Ruling requested — `WITHDRAWN by the author, 2026-09-11`
 
 The ruling asked for above ("E, with that schema change?") is **withdrawn and must not be implemented**.
-It was requested before the one observable symptom had ever been measured. Both measurements now exist and
-both point the other way:
+It was requested before the relevant outcomes had been measured. The available observations do not
+justify it:
 
 - **Whether the framing reduces echoing is not established — the comparison I cited is confounded.** The
   strict signal is the acknowledgement tic ("acting on the block/state", "block above", "not answering it")
@@ -436,12 +440,13 @@ both point the other way:
   directions** — it is inconclusive. `Unverified:` the actual driver (context saturation vs compaction
   summaries leaking self-narration).
 
-- **The block does cause the tic — this part *is* established.** Control across all reachable sessions:
-  workpad-active **112 / 3312 (3.4%)** versus workpad-absent **3 / 64613 (0.0%)**. An earlier note here
-  claimed the tic was "largely the agent's own narration habit"; that is **retracted** — the baseline
-  without the extension is effectively zero.
-- **There is no cost to save.** All workpad content measured **0.48%** of a 7.93 MB session, with no
-  read-side re-read cliff.
+- **The tic is strongly associated with workpad-active sessions, but causality is not established.**
+  Across all reachable sessions: workpad-active **112 / 3312 (3.4%)** versus workpad-absent
+  **3 / 64613 (0.0%)**. The cohorts differ in more than injection, so this motivates a controlled replay;
+  it does not identify the block or its wording as the cause.
+- **No material cost was observed on the sampled Codex path.** All persisted workpad content measured
+  **0.48%** of a 7.93 MB session, with no read-side re-read cliff there. Other provider paths and
+  write-side amplification remain unmeasured.
 - **E carried a coupling nobody priced.** `tool_use` args are the model's *own* view of its state; slimming
   them removes the most trustworthy copy and leaves the injected sheet as the only one, which would likely
   *increase* state-narration rather than reduce it.
@@ -461,9 +466,10 @@ changed on the present evidence.
 
 ### Still honestly open
 
-- Anthropic's **write-side** cache counters were never populated in any build reachable for sampling.
-- **Caused:** the acknowledgement tic is attributable to the injection (3.4% vs 0.0% control). **Not
-  caused by wording,** and **unexplained** as to why it appears in only some sessions.
+- Anthropic **write-side** behavior is unmeasured: current credentials cannot complete a successful run,
+  and the historical zero `cacheWrite` sample was OpenAI Codex, not Anthropic.
+- The acknowledgement tic is **associated** with workpad-active sessions (3.4% vs 0.0% observationally),
+  while causality, wording effect, and session-level concentration remain unexplained.
 - Whether models drop next-action execution once list bodies leave context: never tested.
 - `Method note:` session files record **schema `version: 3`**, not the pi release, so the build behind the
   cost sample cannot be identified from the data. Treat that sample as indicative, not current.
@@ -474,32 +480,34 @@ The frame for choosing a delivery mechanism; outcomes, not mechanisms.
 
 1. **Self-ownership, zero role dissonance** — state reads as the agent's own recall, never as an incoming
    instruction. *Accept:* no unprompted echo, summary, or acknowledgement in a real session.
-   **Inconclusive, and `the earlier "improving" reading was wrong`.** The acknowledgement tic is caused by
-   the injection (3.4% with the workpad active vs 0.0% without, across 2704 session files), but it does not
-   track the wording: every session before 2026-09-11 scored 0.0% under the old wording, including one with
-   148 writes, while two sessions on 2026-09-11 scored ~80% under old and new alike. Framing efficacy is
-   therefore **unmeasured**, pending an offline A/B replay.
+   **Inconclusive, and `the earlier "improving" reading was wrong`.** The acknowledgement tic is strongly
+   associated with workpad-active sessions (3.4% vs 0.0% across 2704 observational session files), but
+   those cohorts do not isolate injection as the cause. It also does not track wording in natural sessions:
+   every session before 2026-09-11 scored 0.0% under the old wording, including one with 148 writes, while
+   two sessions on 2026-09-11 scored ~80% under old and new alike. Framing efficacy is **unmeasured**,
+   pending an adequately powered controlled replay.
    This criterion is additionally **poorly specified**: as written it conflates "model echoes the block" with
    "model narrates what it is doing", and the latter is not a defect of this tool.
 2. **No forced re-reads** *(re-framed from "strict cache-prefix monotonicity")* — the design must not make
    the provider re-read content already sent. Byte-stability while the snapshot is unchanged is still
-   required, because it is what keeps the sheet off the per-turn bill. *Accept:* no re-read cliff attributable
-   to the block. **Met on the read side; write side unmeasured.** The old wording made formal monotonicity
-   itself the acceptance criterion, which measured as cost-free and so was the wrong target.
+   required because it maximizes reusable-prefix opportunity. *Accept:* no re-read cliff attributable
+   to the block on each supported provider path. **Met on the sampled OpenAI Codex read path only; other provider paths and write side
+   unmeasured.** The old wording made formal monotonicity itself the acceptance criterion, which the
+   Codex sample did not show to be a cost lever.
 3. **Recency without duplication** — goal and focus stay steerable across 10+ turns without the same
    state travelling twice in two voices. *Accept:* frontier signal present, no full list bodies per minor
    step. **Duplication confirmed** at `anthropic-messages.js:1028`, but **harm is unmeasured**: it totals
-   0.48% of a 7.93 MB session. So this is a real *inelegance* with no observed cost, and it is **not** a
-   justification for changing the design — the state in `tool_use` args is also the model's honest view of
+   0.48% of a 7.93 MB session. So this is a real *inelegance* with small persisted size and no observed
+   Codex read cliff, not a demonstrated cross-provider cost or a justification for changing the design —
+   the state in `tool_use` args is also the model's honest view of
    its own prior action, which has independent value.
 4. **Durability across reload and compaction** — material shifts reconstructible from durable records.
    **Met today**, independent of the injection.
 
-**Trade-off — dissolved, and the remaining term shrank to nothing:** 2 and 3 were said to pull apart
-because a permanent anchor was assumed to break cache reuse. It does not, measurably. Frontier recency can
-come from the live sheet while durability comes from the persisted branch, which already survives
-compaction via `getBranch`. The only term left standing was **duplication**, and at 0.48% of session bytes
-it does not warrant the schema change E required — hence the hold recorded above.
+**Trade-off — not demonstrated on the sampled Codex path, still open elsewhere:** frontier recency comes
+from the live sheet while durability comes from the persisted branch, which survives compaction via
+`getBranch`. The remaining duplication is 0.48% of this session's bytes. That does not justify schema work
+on current evidence, but it is not proof of cross-provider cache safety — hence the hold recorded above.
 - `Resolved — my error, not a defect:` a workpad call whose list field held a JSON string rather than an
   array rendered with stray brackets and quotes, and two blockers collapsed into one item. Re-issued with
   correctly formed arrays, it rendered clean. `sanitizeList` (which rejects non-arrays) behaved correctly;

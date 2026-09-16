@@ -1,33 +1,79 @@
 # Workpad: cache handling vs. what the LLM perceives
 
-Status picture and roadmap as of 2026-09-11. Source is unchanged at `8ab3870`.
+Decision map updated 2026-09-14. Source is unchanged at `8ab3870`.
 Narrative history and the audit trail of retracted claims live in
-`20260911_workpad-voice-and-frame_1_PLAN.md`; this file is only the current map.
+`20260911_workpad-voice-and-frame_1_PLAN.md`; this file is the current map.
 
 Legend: **SOLVED** done and verified · **ACCEPTED** will not be solved here, by choice ·
 **OPEN** needs an experiment, not more reading · **BLIND** we cannot currently see it.
+
+## 0. North star and non-negotiable requirements
+
+The workpad is the agent's current sheet of paper: its latest goal, focus, next actions,
+blockers, and durable steering notes must remain at the attention frontier so it can
+self-organize during long work. It is not project memory or a task tracker.
+
+Any delivery design must preserve all of these properties:
+
+1. **Frontier recency:** current state must not sink into old tool-call history.
+2. **Self-ownership without repetition:** it reads as the agent's own state and does not
+   provoke echoing, acknowledgement, or multiple stale sheets.
+3. **Actionable guidance:** list bodies remain available until evidence shows a smaller
+   pointer preserves next-action execution.
+4. **Durability:** the latest snapshot survives reload, branching, and compaction.
+5. **Provider-safe caching:** no demonstrated forced re-read of an already-sent prefix;
+   provider-specific cache assumptions cannot justify a generic message-layout change.
+
+Removing the live frontier sheet fails requirements 1 and 3. Moving it is not acceptable
+unless the replacement is measured against all five requirements.
+
+### 0.1 Current destination and decision boundary
+
+No redesign is selected. The current endpoint is an evidence-backed **hold**: keep the source at
+`8ab3870` and retain the live frontier sheet because frontier recency is the feature, not because
+any provider path has proved the layout universally cache-safe.
+
+Implementation reopens only when at least one defined gate produces evidence:
+
+- provider-specific read or write harm attributable to the sheet;
+- a concrete steering failure, such as stale state acted on or next actions dropped; or
+- a controlled alternative that improves self-ownership without weakening recency, actionable
+  guidance, durability, or provider portability.
+
+Until then:
+
+- do not remove the live sheet for cache tidiness;
+- do not generalize one provider's result to another or reorder messages on speculative cache benefit;
+- do not use provider-payload surgery, fabricated tool events, or synthetic history as a workaround;
+- do not turn the workpad into project memory, an activity log, or a task tracker; and
+- do not modify `src/` without a gate signal and an acceptance test covering the affected requirement.
+
+Assistant-before-user and system-prompt placement remain experimental arms only, not chosen designs.
+The next legitimate work is to collect gate evidence or leave the implementation unchanged.
 
 ---
 
 ## 1. Where we stand: anatomy of one request
 
-The workpad exists in three places at once. Only two of them reach the model, and one of
-those two also happens to carry the provider's cache marker.
+The workpad exists in three places at once. Only two reach the model. In Pi's Anthropic
+adapter, the transient copy also carries the deepest explicit cache marker; other providers
+use different cache mechanisms, so this is request anatomy, not a universal cost model.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ tools[]            ≤1 breakpoint · stable                                   │  CACHED
-│ system             ≤1 breakpoint · stable                                   │  CACHED
-│ messages 0..N-2    every past turn: tool_call args ①, tool results ②        │  CACHED
+│ tools[]            ≤1 explicit breakpoint · stable                          │
+│ system             ≤1 explicit breakpoint · stable                          │
+│ messages 0..N-2    every past turn: tool_call args ①, tool results ②        │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ messages[N-1]      last REAL message (tool_result / user reply)             │
-│   └─ cache_control EPHEMERAL ★   ← pi's ONLY breakpoint, lands here          │  ◀ boundary
 ├────────────────────────────────────────────────────────────────────────────┤
-│ messages[N]        THE SHEET ③   role custom → user, appended last,          │  UNCACHEABLE
-│                    request-local: never persisted                            │   every turn
+│ messages[N]        THE SHEET ③   role custom → user, appended last,          │
+│   └─ cache_control EPHEMERAL ★   ← deepest message-level breakpoint          │
+│                    request-local: never persisted                            │
 └────────────────────────────────────────────────────────────────────────────┘
-      ★ sits ON the sheet ⇒ next turn the sheet's old text is mid-context and
-        unmarked ⇒ the tail is re-written from there onward
+      ★ sits ON the sheet in the Anthropic explicit-marker adapter. This is
+        formally non-monotonic. Its read/write effect is unmeasured; the only
+        read-side sample used OpenAI Codex and does not transfer to this path.
 ```
 
 Re-derived from source, not from memory:
@@ -36,7 +82,7 @@ Re-derived from source, not from memory:
 | --- | --- |
 | Injected block is removed and re-appended each turn, so exactly one sheet ever exists | `src/mini-self-org.ts:308-316` |
 | `role:"custom"` is converted to `role:"user"` on the way to the LLM | `chunk-JVUZSMYM.js`, `convertToLlm` |
-| Exactly **one** `cache_control`, on the **last block of the last message**, and **only if that message is `user`** | `anthropic-messages-*.js`, `convertMessages` |
+| Exactly one **message-level** `cache_control`, on the last block of the last message, and only if that message is `user` (separate tool/system markers may also exist) | `anthropic-messages-*.js`, `convertMessages` |
 | `toolResult.details` is never serialized into the provider request | same converter; `details` is absent from every emitted block type |
 | History reconstruction reads persisted `details`, and `getBranch` walks leaf→root over **all** entries | `src/mini-self-org.ts:112,165`; `session-manager.js:953-966` |
 
@@ -46,22 +92,46 @@ Re-derived from source, not from memory:
 | --- | --- | --- | --- | --- |
 | ① | `tool_call` args of every past write | yes, inside the cached prefix | yes | **ACCEPTED** duplication. Also the only in-context proof the state is the agent's *own* prior act — see §4.2 |
 | ② | `toolResult.details.snapshot` | **never** | yes, survives compaction | **SOLVED.** Durable, invisible to the provider, and what reconstruction reads |
-| ③ | The injected sheet | yes, every turn | no | Carries the collision: it is both the live view **and** the cache breakpoint |
+| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Codex showed no read cliff; explicit-marker paths remain unmeasured |
 
-## 3. The collision, stated plainly
+## 3. Cache behavior: what is measured and what is not
 
-The sheet must change whenever state changes — that is its whole purpose. Pi gives us one
-cache breakpoint and places it on the last `user` message, which is the sheet. So the cache
-boundary is permanently parked on the single most volatile thing we send.
+The sheet changes when steering state changes and is request-local. Cache behavior must be
+separated by adapter; Pi 0.85.1 does not emit one provider-neutral cache shape.
 
-Consequence: after a write, the previous turn's sheet text sits mid-context with no marker,
-so Anthropic re-creates the cache from there. **The most expensive location in the request is
-our cheapest, most frequently rewritten object.** Pinned one message earlier, the identical
-design would churn nothing.
+| Pi 0.85.1 path | Request-side mechanism observed in installed source | What the current evidence establishes |
+| --- | --- | --- |
+| Anthropic Messages | Explicit `cache_control` on system/tools and the last block of the last `user` message | The trailing sheet receives the deepest message breakpoint. Cost and hit behavior are **unmeasured here**. |
+| Bedrock Converse + supported Claude | Explicit system and final-user `cachePoint` blocks | Same placement concern, but no project measurement. Nova is documented in Pi source as automatic instead. |
+| OpenAI Responses / Codex | Current Pi 0.85.1 source sends a session-derived `prompt_cache_key`; no Anthropic-style per-message marker | The historical sample below records this API path/model, but not its unknown Pi build's payload. A key influences routing/accounting; it does not guarantee a hit. |
+| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Relies on Gemini implicit prefix caching in this build; no workpad-specific project measurement. |
+| OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Provider name alone is insufficient to infer request or cache semantics; current fixture evidence is inconclusive. |
 
-Measured cost of the whole arrangement: **0.48%** of a 7.93 MB session, with no read-side
-re-read cliff. Structural, real, and currently small — which is why it is ACCEPTED rather than
-fixed.
+Official provider documentation agrees on the important boundary, not on one common mechanism:
+Anthropic supports automatic caching or block-level explicit breakpoints; OpenAI reuses eligible
+prefixes and treats `prompt_cache_key` as routing/accounting rather than a hit guarantee; Gemini
+implicit caching rewards a common prompt prefix. Sources: [Anthropic prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching),
+[OpenAI prompt caching](https://platform.openai.com/docs/guides/prompt-caching), and
+[Gemini context caching](https://ai.google.dev/gemini-api/docs/caching).
+
+**Measured read side, one historical OpenAI Codex session:** direct re-analysis of
+`2026-08-30T12-02-37-198Z_01a0528c-*.jsonl` found that all 524 assistant responses, including
+all 50 responses immediately after a workpad result, recorded API `openai-codex-responses`,
+provider `openai-codex`, and model `gpt-5.6-terra`.
+Those 50 had median 1,122.5 uncached input tokens versus 1,438 on 428 ordinary follow-ups;
+`cacheRead` was non-decreasing in 47/49 consecutive post-write comparisons. A full-context
+re-read cliff was not observed **on that Codex path**. The whole persisted workpad footprint
+was **0.48%** of the 7.93 MB session. The earlier label “Anthropic-path” was wrong.
+
+**Still unknown:** Anthropic/Bedrock behavior with the volatile explicit final-user breakpoint;
+write-side amplification (`cacheWrite` was zero in the Codex sample); behavior on current builds;
+and workpad-specific results for Gemini and compatible APIs. Therefore:
+
+- do not claim that the transient tail kills caching;
+- do not transfer Codex cache results to Anthropic, Bedrock, Gemini, or compatible APIs;
+- do not claim universal cache safety from one provider-path observation;
+- do not reorder messages for cache reasons without provider-spanning evidence;
+- retain the live frontier sheet because it is the feature, not incidental overhead.
 
 ## 4. Issue ledger
 
@@ -76,32 +146,34 @@ fixed.
 
 ### 4.2 ACCEPTED — will not be solved here
 
-- **The breakpoint location** (§3). Fixable only in the provider layer, outside this repo.
-  Named debt, with a reopen gate (§5).
-- **Duplicate copies in ①.** Full snapshots stay in every historical `tool_call` arg. Cost is
-  0.48%, and slimming them would remove the model's own record of what it wrote — the most
-  trustworthy signal that this state is *its* state and not an injected instruction. Removing
-  it risks reinstating exactly the "alien information" feeling that motivated this work.
-  Rejected on evidence, not taste.
-- **Wording as a lever for the acknowledgement tic.** The tic is caused by the injection
-  (**3.4%** with the workpad active vs **0.0%** across 64,613 assistant messages without it) and
-  is *not* moved by phrasing: 0.0% in every pre-2026-09-11 session, including one with 148
-  writes, ~80% in two 09-11 sessions under both old and new wording.
+- **Current tail placement.** It preserves frontier recency and showed no read-side re-read
+  cliff on the measured OpenAI Codex path. Keep it unless write-side or cross-provider evidence
+  demonstrates material harm; Anthropic and Bedrock explicit-final-user behavior remains open,
+  and explicit boundary control is possible upstream work rather than a proven generic fix.
+- **Duplicate copies in ①.** Full snapshots stay in every historical `tool_call` arg. Their
+  persisted size was 0.48% in the measured session, and no behavioral or provider-cost harm has
+  been demonstrated. Slimming them would also remove the model's own record of what it wrote,
+  creating an unmeasured self-ownership risk. Hold rather than change one unmeasured trade-off
+  for another.
 
 ### 4.3 OPEN — needs a run, not more reading
 
-- **Why the tic concentrates.** Context saturation, compaction leaking self-narration, or
-  something else. The same-day pair `01a08f1d` (18.2%) vs `01a08f56` (79.6%) rules out write
-  count; model sets were identical, ruling out model.
-- **Whether the §7 placement (assistant-before-user, merge rule) is honored and benign.** Requires
-  one fixture arm for insertion support, then the TIC arm over ≥30 turns with the sheet actually
-  delivered in every arm (tool-named prompts per §6a). Until then §7 is a candidate, not a finding.
+- **Whether framing changes the acknowledgement tic, and why the tic concentrates.** Workpad-active
+  sessions show a strong association (**3.4%** vs **0.0%** across 64,613 assistant messages without
+  it), but the observational cohorts do not prove causality. Natural sessions also cannot isolate
+  phrasing: rates cluster by session, and the small controlled run had zero strict acknowledgements
+  in either arm. The same-day pair `01a08f1d` (18.2%) vs `01a08f56` (79.6%) shows write count and
+  model selection alone do not explain the variance; context saturation, compaction, and stochastic
+  behavior remain candidates.
+- **Whether any alternative placement improves self-ownership without weakening frontier
+  guidance or provider portability.** The §7 assistant-before-user layout remains an exploratory
+  semantic arm only; it is not a provider-agnostic cache fix.
 - **Whether list bodies leaving context degrades next-action execution.** Never tested.
 
 ### 4.4 BLIND — not observable today
 
-- **Anthropic write-side cache counters.** Never populated in any build reachable here, so the
-  §3 re-write cost is inferred from request structure, not read from a bill.
+- **Anthropic write-side cache counters.** No successful Anthropic run is reachable with current
+  credentials, so explicit-final-user write cost is unknown rather than inferred from Codex zeros.
 - **Which pi build produced a past session.** Session files store schema `version: 3`, not a
   release, so the 0.48% sample is indicative rather than current.
 
@@ -131,10 +203,10 @@ the default stays *hold* until data says otherwise.
 | Gate | Experiment | Decides | Owner / reach |
 | --- | --- | --- | --- |
 | **G1** | Replay one long transcript against pre-fix and post-fix framing, varying nothing else | Whether wording matters at all — natural sessions cannot answer this, session-level variance swamps it | Local script + local models. Cheapest real answer available. **First attempt run 2026-09-11: too short and contaminated, see §6** |
-| **G2** | Re-measure workpad bytes / session bytes; look for a re-read cliff | Whether the sheet has become worth engineering for | Read-only over session data |
+| **G2** | Re-measure workpad bytes / session bytes and read cliffs **per adapter/model** | Whether the sheet has become worth engineering for on a specific provider path | Read-only over session data; never pool provider paths |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
-| **G4** | Upstream: pin the breakpoint on the last real message rather than the injected one | Whether the §3 churn disappears without touching the design | Outside this repo; needs a pi feature or option |
-| **G5** | Expose cache write counts | Whether §3's inferred cost is real | Upstream / provider; not ours to build |
+| **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
+| **G5** | Capture serialized payload plus cache read/write usage while changing only the sheet tail | Whether the transient tail causes read misses or write amplification on each adapter | Use `before_provider_request`; requires provider counters/credit |
 
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
@@ -163,11 +235,11 @@ What the 2026-09-14 write-driving runs established, before the wording compariso
   been measured with the sheet delivered.
 - Environment: macOS has no `timeout` binary (exit 127) — arm scripts must not gate on it.
 
-Status: the completed 12-turn cerebras runs (§6a) delivered the sheet and gave a wording
-answer. **Behaviour is a tie** — restating the sheet's field labels and explicit acknowledgments
-were 0 in both arms; the only signal is loose mention of "workpad/focus", 5/31 text blocks (OLD)
-vs 3/31 (NEW), small and not a verdict. NEW's only real attributable edge is cost (−83 B/request).
-§4.2's decision stands: no `src/` change is signalled by G1.
+Status: the completed 12-turn cerebras runs (§6a) delivered the sheet but did **not** settle the
+wording question. Restating the sheet's field labels and explicit acknowledgments were 0 in both
+arms; the only signal is loose mention of "workpad/focus", 5/31 text blocks (OLD) vs 3/31 (NEW),
+too small for a verdict. NEW's only attributable edge is request size (−83 B/request). G1 remains
+open, and no `src/` change is signalled.
 
 ## 6. Measured: the first live A/B in this environment (2026-09-11)
 
@@ -195,8 +267,9 @@ pi -ne -e <pi-olla-autodetect>/index.ts [-e ./index.ts] \
 
 ### What it did **not** establish
 
-- **Cache cost — unmeasurable here.** Only the Anthropic path stamps `cache_control`, and it is
-  unreachable on credit; local models expose no cache counters. §3 therefore stays inferred.
+- **Cache cost — unmeasurable here.** Of the paths exercised in this A/B, only the unreachable
+  Anthropic path would stamp `cache_control`; local models expose no cache counters. §3 therefore
+  remains unmeasured for those paths.
 - **Wording effect — null with no power.** Strict injected-block acknowledgements: **0 in arm A
   and 0 in arm B**, across 4 assistant text turns each. Four turns cannot detect a rate that
   appears in long sessions; this is not evidence of no effect.
@@ -212,13 +285,14 @@ pi -ne -e <pi-olla-autodetect>/index.ts [-e ./index.ts] \
 No gate moved. G1 needs a real fixture before it means anything: a single long fixed transcript
 (30+ turns), prompts that never name the tool under test, both framings, same model and session
 dir as above. The cache question needs either provider credit (G5) or upstream cache-counter
-exposure — it cannot be answered in this environment at all.
+exposure — write-side amplification cannot be answered in this environment.
 
-## 7. Sheet position: a provider-agnostic candidate (2026-09-14)
+## 7. Sheet position: exploratory semantic arm, not a cache fix (2026-09-14)
 
-G4 names the upstream fix (pin the breakpoint elsewhere). This is the in-repo, provider-agnostic
-complement: **move the sheet's position in the message sequence**, so the breakpoint no longer needs
-help from pi.
+This layout was explored as an in-repo alternative. It may improve the sheet's assistant-owned
+voice, but its cache argument depends on one adapter's explicit-marker behavior. Moving volatile
+content earlier can shorten the reusable prefix for automatic-prefix providers. It is therefore
+**not** the active design and **not** provider-agnostic cache evidence.
 
 ### The placement
 
@@ -235,9 +309,9 @@ Properties:
   some providers (Anthropic) accept and others reject — that is why "trailing assistant" is ruled
   out for a provider-agnostic design. Prepending the sheet keeps the terminating role `user`
   everywhere.
-- **Breakpoint falls on the stable part.** Pi stamps `cache_control` on the last `user` message, so
-  it lands on the task. Cached prefix = deep history; a sheet change now churns *sheet + task*
-  instead of invalidating the only boundary wholesale (§3 consequence, bounded).
+- **Adapter-specific cache effect.** Pi's Anthropic adapter would stamp `cache_control` on the
+  task rather than the sheet. No write-side measurement shows that this improves cost, while
+  moving the changing sheet earlier may reduce reuse under automatic-prefix caching.
 - **Clarity.** The model reads the sheet as its own prior voice immediately before the user's new
   request — the strongest position for the "own paper, not injected instruction" perception this
   work exists for (cf. §4.2 on why self-voice evidence is load-bearing).
@@ -261,14 +335,12 @@ Either way: alternating roles, ending at `user`.
 - No new upstream mechanism is required: reorder/insert/append inside the returned copy uses the
   same hook the current sheet uses.
 
-### Unverified — the two gates before this is more than paper
+### Unverified — what would be required to reopen it
 
-1. **Insertion vs filtering.** The extension docs demonstrate *filtering* the message list; whether
-   pi's provider layer honors *inserted/appended* messages in that same return is not proven. One
-   fixture arm settles it (expect: works, or the sheet silently disappears — a loud failure either
-   way, not a subtle one).
-2. **Real cache behaviour.** Only the Anthropic path stamps breakpoints, it is credit-blocked here,
-   and local models report 0 counters (§6). Benefit #2 stays inferred until G5.
+1. **Insertion support:** prove Pi honors the inserted/merged assistant block.
+2. **Behavior:** show less role dissonance without worse next-action execution over 30+ turns.
+3. **Provider safety:** compare serialized requests and available cache metrics across explicit-
+   boundary and automatic-prefix provider paths. No cache benefit is assumed before that evidence.
 
 ### Alternate channel, for A/B, not as replacement
 
