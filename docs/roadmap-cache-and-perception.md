@@ -97,7 +97,9 @@ Re-derived from source, not from memory:
 ## 3. Cache behavior: what is measured and what is not
 
 The sheet changes when steering state changes and is request-local. Cache behavior must be
-separated by adapter; Pi 0.85.1 does not emit one provider-neutral cache shape.
+separated by adapter; Pi 0.85.1 does not emit one provider-neutral cache shape. The five adapter-
+family rows below explain mechanics; the exhaustive status of all **57 currently selectable provider
+IDs / 711 model entries** is maintained in `docs/cache-test-matrix.md`.
 
 | Pi 0.85.1 path | Request-side mechanism observed in installed source | What the current evidence establishes |
 | --- | --- | --- |
@@ -444,6 +446,8 @@ arm (`user-trailing` / `assistant-before-user` / `system`) if the insertion arm 
   2026-09-14 placement candidate (assistant-before-user).
 - `docs/cache-probe-evidence-2026-09-16.json` — bounded G5 harness hashes, structural controls,
   usage counters, and non-causal conclusions; raw local JSONL paths are identified but ignored.
+- `docs/cache-test-matrix.md` — exhaustive dated coverage map for all provider IDs currently
+  selectable in this Pi profile; exact tested models are separated from untested siblings.
 - `20260911_workpad-voice-and-frame_1_PLAN.md` — how we got here, including two committed
   figures that were wrong and are corrected in `e5a4097` / `0231c64`. Read it before re-opening
   any gate, so a retracted claim does not resurface as a premise.
