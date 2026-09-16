@@ -16,6 +16,8 @@ Enumerating all 711 model IDs here would hide that boundary rather than clarify 
 | Status | Meaning |
 | --- | --- |
 | **CONTROLLED PASS** | A1=A2 and B1=B2 raw payloads; A≠B; all canonical hashes equal after replacing exactly one tail; warm A→B cache behavior was measured. Bounded to the named model/route/build. |
+| **CONTROLLED MISS** | The controls passed and A2 proved a warm prefix, but the first changed-tail B request reported no reuse; B2 then hit. This is an adverse exact-model observation, not proof of a universal provider rule. |
+| **MIXED** | Multiple exact models under one provider ID produced materially different controlled outcomes; inspect the named models rather than assigning one provider-wide result. |
 | **PARTIAL** | Structural controls passed, but the run lacked a warm baseline or another condition required to attribute the A→B effect. |
 | **OBSERVATIONAL** | Real usage counters exist, but no controlled serialized-payload A/B was run. |
 | **COUNTER-BLIND** | Requests ran in the relevant sample, but the path exposed no useful cache-read/write signal; provider/server instrumentation is required. |
@@ -28,7 +30,7 @@ Enumerating all 711 model IDs here would hide that boundary rather than clarify 
 | --- | ---: | --- | --- | --- | --- |
 | `anthropic` | 14 | Anthropic Messages | **CONTROLLED PASS** | `claude-haiku-4-5` (1/14) | Tail change retained 4,338 cached tokens and wrote 44; repeat read 4,382. Replicate and test other Claude families before widening. |
 | `github-copilot` | 17 | Anthropic Messages + OpenAI Completions/Responses | **CONTROLLED PASS** | `gpt-5.6-terra` via OpenAI Responses (1/17) | Stable `prompt_cache_key`; tail change retained 7,132 and wrote 20; repeat read 7,152. Other Copilot models/transports are separate cells in substance. |
-| `google` | 22 | Google Generative AI | **PARTIAL** | `gemini-2.5-flash` (1/22) | Two runs reproduced a B2-only 6,111-token read, but A2 never hit; warm A→B effect remains unresolved. |
+| `google` | 22 | Google Generative AI | **MIXED** | `gemini-2.5-flash`, `gemini-3.5-flash`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash` (5/22) | 3.5 retained 4,074 across A2→B1; 3.8 had A2 hit→B1 miss→B2 hit; 3.6 never hit; 3.7 and 2.5 were B2-only. Never pool these outcomes. |
 | `google-vertex` | 14 | Google Vertex | **UNRUN** | — | Run a separate Vertex profile; do not transfer Google AI Studio results. |
 | `openai` | 39 | OpenAI Responses | **UNRUN** | — | Highest-value next direct comparison: fixed cache key plus one representative cached model. |
 | `openai-codex` | 8 | OpenAI Codex Responses | **OBSERVATIONAL** | `gpt-5.6-terra` (1/8) | Historical session showed no post-workpad read cliff, but build and serialized payload were not captured. Run current G5 for causal evidence. |
@@ -41,13 +43,13 @@ Aggregator results must pin both the visible model ID and the actual upstream ro
 
 | Provider ID | Models listed | API family in Pi | Status | Measured model | Coverage / next gate |
 | --- | ---: | --- | --- | --- | --- |
-| `cerebras` | 3 | OpenAI Completions | **UNRUN** | — | Prior behavior runs were trajectory-contaminated and are not cache tests. |
+| `cerebras` | 3 | OpenAI Completions | **CONTROLLED MISS** | `qwen-3.8-27b` (1/3) | A2 read 7,168; first changed-tail B read zero; B2 read 7,168. Replicate before treating this as stable; `gemma-4-31b` and `gpt-oss-120b` remain untested. |
 | `groq` | 7 | OpenAI Completions | **UNRUN** | — | Establish cached-token counter support, then run one pinned model. |
 | `huggingface` | 75 | OpenAI Completions | **UNRUN** | — | Pin exact inference provider/model; catalog entry alone does not identify cache semantics. |
 | `openrouter` | 388 | Anthropic Messages + OpenAI Completions | **UNRUN** | — | Pin `only`/route and model before testing; never pool the 388 entries. |
 | `together` | 22 | OpenAI Completions | **UNRUN** | — | Establish cached-token accounting, then run one pinned model. |
 | `scaleway-on-demand` | 1 | Custom OpenAI Completions | **UNRUN** | — | Verify endpoint health and cache counters before G5. |
-| `wafer` | 1 | Custom OpenAI Completions | **UNRUN** | — | Verify endpoint health and cache counters before G5. |
+| `wafer` | 1 | Custom OpenAI Completions | **CONTROLLED PASS** | `DeepSeek-V4-Flash-0731-Fast` (1/1) | A2 reported no hit, but the first never-before-sent B and B2 each read 6,912 cached tokens with only 256 uncached input; repeat to test propagation stability. |
 | `google-vertex-agent-platform` | 1 | Custom OpenAI Completions route | **UNRUN** | — | Treat separately from native Vertex; verify route and counter semantics. |
 | `google-vertex-agent-platform-qwen3coder` | 1 | Custom OpenAI Completions route | **UNRUN** | — | Treat separately from native Vertex; verify route and counter semantics. |
 
@@ -105,11 +107,12 @@ only zero/absent counters, G5 is **counter-blind** and server-side prefix-cache 
 
 | Status | Provider IDs | Model entries represented |
 | --- | ---: | ---: |
-| **CONTROLLED PASS** | 2 | 31, but only 2 exact models tested |
-| **PARTIAL** | 1 | 22, but only 1 exact model tested |
+| **CONTROLLED PASS** | 3 | 32, but only 3 exact models tested |
+| **CONTROLLED MISS** | 1 | 3, based on 1 exact model |
+| **MIXED** | 1 | 22, with 5 exact models tested |
 | **OBSERVATIONAL** | 1 | 8, but only 1 exact model observed |
 | **COUNTER-BLIND** | 1 | 8, based on one sampled model |
-| **UNRUN** | 52 | 642 |
+| **UNRUN** | 50 | 638 |
 | **Total** | **57** | **711** |
 
 The next high-value order is **direct OpenAI Responses → native Google Vertex → current OpenAI

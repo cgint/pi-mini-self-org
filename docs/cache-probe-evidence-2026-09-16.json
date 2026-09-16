@@ -6,19 +6,20 @@
   "harness": {
     "extension": {
       "path": "test-lab/cache-probe.ts",
-      "sha256": "8d5c0f2461472175f17fadb891a567092f12dd65894ff701b67710e582328a2e"
+      "sha256": "ae9894169cb71ac61ae1f2df158984ac37cf49d90963184a1fd9495c805624c4"
     },
     "runner": {
       "path": "test-lab/cache-probe-run.sh",
-      "sha256": "0e610414fe4289ed879369bc7914d7db546cf31d2b2d818e69e5c622416da3c8"
+      "sha256": "7a2d9da933936ea4d4d5d1403228d97748e4eb2313c5740f403cec8f27ed0c49"
     },
-    "versionNote": "The two final Anthropic and Copilot runs used these exact harness hashes. The two Google runs used the immediately preceding reviewed version; later changes added Copilot validation and strengthened no Google payload construction, hashing, or usage path.",
+    "versionNote": "The six Wafer, Cerebras, and Gemini 3.5\u20133.8 runs used these exact harness hashes. Earlier runs used the reviewed hashes recorded in repository history; subsequent profile additions did not alter their payload construction, hashing, or usage paths.",
     "controls": [
       "A1 and A2 raw payload hashes must match",
       "B1 and B2 raw payload hashes must match",
       "A and B raw payload hashes must differ",
       "all hashes after replacing exactly the controlled tail must match",
-      "Copilot additionally requires one stable serialized prompt_cache_key across all four calls"
+      "Copilot additionally requires one stable serialized prompt_cache_key across all four calls",
+      "OpenAI Completions profiles additionally require the exact model, one 32 KiB system anchor, and exactly one controlled trailing sheet"
     ]
   },
   "calibrations": [
@@ -30,13 +31,48 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-copilot-terra-20260916.jsonl",
         "sha256": "8eb5099fa2f89cae3e965251b2c6fc5b92f854b82106053b951a4c683f17fb48"
       },
-      "completedSteps": ["A1", "A2"],
+      "completedSteps": [
+        "A1",
+        "A2"
+      ],
       "usageByStep": {
-        "A1": { "input": 3, "output": 55, "cacheRead": 0, "cacheWrite": 7153 },
-        "A2": { "input": 3, "output": 48, "cacheRead": 7153, "cacheWrite": 0 }
+        "A1": {
+          "input": 3,
+          "output": 55,
+          "cacheRead": 0,
+          "cacheWrite": 7153
+        },
+        "A2": {
+          "input": 3,
+          "output": 48,
+          "cacheRead": 7153,
+          "cacheWrite": 0
+        }
       },
       "stopReason": "The fail-closed runner stopped before B1 because A1 and A2 differed only in the session-derived prompt_cache_key. This run is calibration evidence, not a tail-change result.",
       "correction": "The final Copilot profile uses --no-session with the same explicit in-memory session ID for every independent process, keeping prompt_cache_key stable without persisting or replaying conversation context."
+    },
+    {
+      "runId": "g5-wafer-deepseek-controlled-20260916",
+      "provider": "wafer",
+      "model": "DeepSeek-V4-Flash-0731-Fast",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-wafer-deepseek-controlled-20260916.jsonl",
+        "sha256": "9b71a526a980e3c472d252249f6d5203f82441b3b4459d05f8a05ce9522fc652"
+      },
+      "completedSteps": [
+        "A1"
+      ],
+      "usageByStep": {
+        "A1": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        }
+      },
+      "stopReason": "The endpoint rejected reasoning_effort minimal before generation; the fail-closed runner sent no later steps.",
+      "correction": "The final Wafer and Cerebras profile uses the lowest common supported reasoning level, low."
     }
   ],
   "runs": [
@@ -48,17 +84,27 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-anthropic-haiku-final-20260916.jsonl",
         "sha256": "3e95aed08843a5ba22af051282fb7692fb11c755b89d995148e86653c575af67"
       },
-      "completedSteps": ["A1"],
+      "completedSteps": [
+        "A1"
+      ],
       "request": {
         "validationOk": true,
         "rawPayloadHash": "8e1864bbba7257e9b72cd8127a0312c59ff629ed05a5f3f94ea8eb7a3bcc1653",
         "canonicalControlHash": "a9d6a7ffbe9024b4fd7a23b0bce77aa9111f632c5c3badb054196ed572a0fc7b",
         "canonicalControlReplacements": 1,
-        "cacheMarkerPaths": ["$.messages[1].content[0].cache_control", "$.system[0].cache_control"]
+        "cacheMarkerPaths": [
+          "$.messages[1].content[0].cache_control",
+          "$.system[0].cache_control"
+        ]
       },
       "response": {
         "stopReason": "error",
-        "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        }
       },
       "terminalObservationNotPresentInRawLog": {
         "errorType": "invalid_request_error",
@@ -74,12 +120,38 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-20260916.jsonl",
         "sha256": "e6827312c9472633d010e5fb7b3fcec515cad354ad461896b7d65643e5910dc9"
       },
-      "controls": { "aRawEqual": true, "bRawEqual": true, "aRawDiffersFromB": true, "canonicalControlHashCount": 1, "explicitCacheMarkerPaths": [] },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": []
+      },
       "usageByStep": {
-        "A1": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
-        "A2": { "input": 6684, "output": 11, "cacheRead": 0, "cacheWrite": 0 },
-        "B1": { "input": 6683, "output": 40, "cacheRead": 0, "cacheWrite": 0 },
-        "B2": { "input": 572, "output": 28, "cacheRead": 6111, "cacheWrite": 0 }
+        "A1": {
+          "input": 6684,
+          "output": 19,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6684,
+          "output": 11,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 40,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 572,
+          "output": 28,
+          "cacheRead": 6111,
+          "cacheWrite": 0
+        }
       }
     },
     {
@@ -90,12 +162,38 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-replication-20260916.jsonl",
         "sha256": "89929ac2dcecce2b88b13253572f099d2d98b0de4def45f8710f4d2da72790a9"
       },
-      "controls": { "aRawEqual": true, "bRawEqual": true, "aRawDiffersFromB": true, "canonicalControlHashCount": 1, "explicitCacheMarkerPaths": [] },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": []
+      },
       "usageByStep": {
-        "A1": { "input": 6684, "output": 14, "cacheRead": 0, "cacheWrite": 0 },
-        "A2": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
-        "B1": { "input": 6683, "output": 40, "cacheRead": 0, "cacheWrite": 0 },
-        "B2": { "input": 572, "output": 40, "cacheRead": 6111, "cacheWrite": 0 }
+        "A1": {
+          "input": 6684,
+          "output": 14,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6684,
+          "output": 19,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 40,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 572,
+          "output": 40,
+          "cacheRead": 6111,
+          "cacheWrite": 0
+        }
       }
     },
     {
@@ -118,10 +216,30 @@
         "canonicalControlHash": "f1d9abbf05f112b29b2aee065b73c16e4e0bd6372ccbd12499f2f0a9061e9684"
       },
       "usageByStep": {
-        "A1": { "input": 3, "output": 45, "cacheRead": 7153, "cacheWrite": 0 },
-        "A2": { "input": 3, "output": 30, "cacheRead": 7153, "cacheWrite": 0 },
-        "B1": { "input": 3, "output": 50, "cacheRead": 7132, "cacheWrite": 20 },
-        "B2": { "input": 3, "output": 33, "cacheRead": 7152, "cacheWrite": 0 }
+        "A1": {
+          "input": 3,
+          "output": 45,
+          "cacheRead": 7153,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 3,
+          "output": 30,
+          "cacheRead": 7153,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 3,
+          "output": 50,
+          "cacheRead": 7132,
+          "cacheWrite": 20
+        },
+        "B2": {
+          "input": 3,
+          "output": 33,
+          "cacheRead": 7152,
+          "cacheWrite": 0
+        }
       },
       "boundary": "One controlled Copilot Pro/Terra run. It shows provider-reported prefix reuse across this synthetic tail change, not a guarantee for other prompts, accounts, models, adapters, regions, or future builds."
     },
@@ -138,29 +256,338 @@
         "bRawEqual": true,
         "aRawDiffersFromB": true,
         "canonicalControlHashCount": 1,
-        "cacheMarkerPaths": ["$.messages[1].content[0].cache_control", "$.system[0].cache_control"],
+        "cacheMarkerPaths": [
+          "$.messages[1].content[0].cache_control",
+          "$.system[0].cache_control"
+        ],
         "aRawPayloadHash": "8e1864bbba7257e9b72cd8127a0312c59ff629ed05a5f3f94ea8eb7a3bcc1653",
         "bRawPayloadHash": "8cd7c129cd2736fdd5fb9ad5223a626d3690e2aaad098354fcfab6c85e11ce35",
         "canonicalControlHash": "a9d6a7ffbe9024b4fd7a23b0bce77aa9111f632c5c3badb054196ed572a0fc7b"
       },
       "usageByStep": {
-        "A1": { "input": 10, "output": 79, "cacheRead": 0, "cacheWrite": 4382 },
-        "A2": { "input": 10, "output": 57, "cacheRead": 4382, "cacheWrite": 0 },
-        "B1": { "input": 10, "output": 90, "cacheRead": 4338, "cacheWrite": 44 },
-        "B2": { "input": 10, "output": 80, "cacheRead": 4382, "cacheWrite": 0 }
+        "A1": {
+          "input": 10,
+          "output": 79,
+          "cacheRead": 0,
+          "cacheWrite": 4382
+        },
+        "A2": {
+          "input": 10,
+          "output": 57,
+          "cacheRead": 4382,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 10,
+          "output": 90,
+          "cacheRead": 4338,
+          "cacheWrite": 44
+        },
+        "B2": {
+          "input": 10,
+          "output": 80,
+          "cacheRead": 4382,
+          "cacheWrite": 0
+        }
       },
       "boundary": "One controlled direct-Anthropic/Haiku run. It shows provider-reported prefix reuse and a bounded tail write for this synthetic request, not universal or future behavior."
+    },
+    {
+      "runId": "g5-wafer-deepseek-low-controlled-20260916",
+      "provider": "wafer",
+      "model": "DeepSeek-V4-Flash-0731-Fast",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-wafer-deepseek-low-controlled-20260916.jsonl",
+        "sha256": "f07c01cee0ad5af1bd83091ee65d4e695b10607eddbda98160b649515831cc5d"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "c3b35ee2db2e19d0f96f6563c0cd5434c67b00d4141402e9114c957e93e3cab8",
+        "bRawPayloadHash": "d5c9455b1a344e137b755cbbb10146f8a9f82f349034eb35950e37ff06d375fc",
+        "canonicalControlHash": "ef092d798d96236eee63094912b2c5b432555bb5e7c8dac8e4a5c69fcaaede41"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 7167,
+          "output": 50,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 7167,
+          "output": 28,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 256,
+          "output": 34,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 256,
+          "output": 66,
+          "cacheRead": 6912,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED PASS",
+      "boundary": "First changed-tail B request reported 6,912 cached tokens and 256 uncached input; B2 repeated the 6,912-token read. A2 did not report a hit, and B1's tail had not previously been sent in this run, so the observation is consistent with delayed availability and reuse of the shared A prefix; backend routing remains unobserved."
+    },
+    {
+      "runId": "g5-cerebras-qwen38-controlled-20260916",
+      "provider": "cerebras",
+      "model": "qwen-3.8-27b",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-cerebras-qwen38-controlled-20260916.jsonl",
+        "sha256": "02c22de5b26fb63a876e212f22182f841db33424aee7005d38d3953880493b7c"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "6cb36f97d453ac596784f966faf2dfd9152cdf22fae20f8729544e571501ac0c",
+        "bRawPayloadHash": "af02ad875cf8926537b4fadd90d065b29a79f6745781d4a4f590b1bcb8d94b5f",
+        "canonicalControlHash": "43539ab522e96d471729971b311934b63b139abf2a6243c67ab282337802a344"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 7202,
+          "output": 15,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 34,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 7201,
+          "output": 16,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 33,
+          "output": 16,
+          "cacheRead": 7168,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED MISS",
+      "boundary": "A2 read 7,168 cached tokens. The first changed-tail B request read zero and charged 7,201 input tokens; B2 then read 7,168. This exact run observed a warm-prefix miss after the tail change; it does not certify Cerebras sibling models or future routing."
+    },
+    {
+      "runId": "g5-google-gemini35-controlled-20260916",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini35-controlled-20260916.jsonl",
+        "sha256": "45409601405a7e5cb2b75b164f525cbacc5f61265ac88f44ecf88e0db1422394"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "d4e7fff4b84659f4ef8d46e1c06cee31f42527745b4ee8c91f706d14bc710e01",
+        "bRawPayloadHash": "0cf442f639799a9cb9a0f587220058b2f70d208b509239aea264aa5fe81a8792",
+        "canonicalControlHash": "87f6c319684c1cc67a47887a2906267e05931d4e843aadf0135ffde934293904"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 43,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2610,
+          "output": 41,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 2609,
+          "output": 101,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2609,
+          "output": 85,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED PASS",
+      "boundary": "A2, first-B, and B2 each reported 4,074 cached tokens. This exact Google AI Studio model retained its reported cached prefix across the synthetic tail change."
+    },
+    {
+      "runId": "g5-google-gemini36-controlled-20260916",
+      "provider": "google",
+      "model": "gemini-3.6-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini36-controlled-20260916.jsonl",
+        "sha256": "2eb4f92e7c6d3eafe5a17138a9561361088814029d0de7b66709ac91a84d3e87"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "57c76b7e029e8ac1f158f72bb92d01577f817fb8154c6aeceacab9b098dc4f45",
+        "bRawPayloadHash": "6fc7697190984cc902aba89a0687811bf5059c7124902c42b57b69441aab465a",
+        "canonicalControlHash": "7cb13dd7c8ea2c0acf784237ec3a027b2f38b3d8f1fea667f5054239af0d5eb3"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 275,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6684,
+          "output": 71,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 91,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 6683,
+          "output": 664,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "NO HIT OBSERVED",
+      "boundary": "All four calls reported zero cacheRead. Structural controls passed, but this run cannot distinguish no cache use from model/provider-managed timing or policy."
+    },
+    {
+      "runId": "g5-google-gemini37-controlled-20260916",
+      "provider": "google",
+      "model": "gemini-3.7-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini37-controlled-20260916.jsonl",
+        "sha256": "a8f53c6397e4df73ca5967b5e6e58ece62fc38fdaf1a6173a451eca07f62ac74"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "eeb77fc9e4e3192db5e408103751dc339eacaf4e542e0ed99f53f81fe30eaf2f",
+        "bRawPayloadHash": "61748eaefbcafc741c8ad52859ab0c39b49ae456a20a6f452780b0121b1ba712",
+        "canonicalControlHash": "b2c7f9b57ee9a090b2664b246879c985c8727896b12fd17fd29759717b975434"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 545,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 6684,
+          "output": 163,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 30,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2609,
+          "output": 155,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "PARTIAL",
+      "boundary": "Only B2 reported a 4,074-token read. As with the earlier Gemini 2.5 runs, no warm A hit existed, so the A-to-B effect is unresolved."
+    },
+    {
+      "runId": "g5-google-gemini38-controlled-20260916",
+      "provider": "google",
+      "model": "gemini-3.8-flash",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-google-gemini38-controlled-20260916.jsonl",
+        "sha256": "2b35b5b83f9aeb29d51e911c95aece964c54fab3e9992256cc7bc5fdc58ad822"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "922d48e037f6e0b36db34031256b98baa26227445c04b4fab1fdb526c8ab851d",
+        "bRawPayloadHash": "61174b4a8a3c456a065c6470624e86367046da4088eda738fd36992dad65232e",
+        "canonicalControlHash": "4897996dfabf151627c71727065f1394311ca41be80c4f96fd55e7da0a4cfac2"
+      },
+      "usageByStep": {
+        "A1": {
+          "input": 6684,
+          "output": 162,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "A2": {
+          "input": 2610,
+          "output": 677,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        },
+        "B1": {
+          "input": 6683,
+          "output": 11,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "B2": {
+          "input": 2609,
+          "output": 67,
+          "cacheRead": 4074,
+          "cacheWrite": 0
+        }
+      },
+      "outcome": "CONTROLLED MISS",
+      "boundary": "A2 read 4,074 cached tokens, first-B read zero, and B2 read 4,074. This exact run observed a warm-prefix miss after the tail change; it does not establish universal Gemini behavior."
     }
   ],
   "conclusion": {
     "established": [
       "The controlled Copilot GPT-5.6 Terra run retained 7132 cached prefix tokens when only the trailing sheet changed and reported a 20-token cache write; the repeat read 7152 cached tokens.",
       "The controlled direct Anthropic Haiku 4.5 run retained 4338 cached prefix tokens when only the explicitly marked trailing sheet changed and reported a 44-token cache write; the repeat read 4382 cached tokens.",
-      "Both controlled Gemini runs reported the same B2-only 6111-token cacheRead pattern."
+      "Wafer DeepSeek V4 Flash reported a 6912-token cache read on the first changed-tail B request and again on B2, despite no reported A2 hit.",
+      "Cerebras qwen-3.8-27b reported a 7168-token A2 hit, a zero-hit first-B miss, then a 7168-token B2 hit.",
+      "Gemini 3.5 Flash retained a 4074-token reported cache read across A2, first B, and B2; Gemini 3.8 Flash instead reported an A2 hit, first-B miss, and B2 hit.",
+      "Gemini 3.6 Flash reported no hits; Gemini 3.7 Flash and both earlier Gemini 2.5 Flash runs reported only delayed B2 hits."
     ],
     "notEstablished": [
       "Universal cache safety across providers, models, accounts, regions, prompts, or future Pi/provider builds.",
-      "Whether changing A to B preserved or invalidated a warm Gemini prefix, because A2 never reported a hit.",
+      "A single provider-wide Gemini conclusion: the exact tested versions produced materially different controlled patterns.",
+      "Whether the Cerebras and Gemini 3.8 first-B misses are stable behavior across replications, routes, or cache propagation conditions.",
       "Bedrock behavior or a reason to change the shipped workpad placement."
     ]
   }

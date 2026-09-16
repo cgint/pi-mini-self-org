@@ -92,7 +92,7 @@ Re-derived from source, not from memory:
 | --- | --- | --- | --- | --- |
 | ① | `tool_call` args of every past write | yes, inside the cached prefix | yes | **ACCEPTED** duplication. Also the only in-context proof the state is the agent's *own* prior act — see §4.2 |
 | ② | `toolResult.details.snapshot` | **never** | yes, survives compaction | **SOLVED.** Durable, invisible to the provider, and what reconstruction reads |
-| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Controlled Haiku and Copilot Terra probes retained the stable prefix across a synthetic tail change; Bedrock remains unmeasured |
+| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Exact-model probes now include retained-prefix, delayed-hit, no-hit, and first-B-miss outcomes; Bedrock remains unmeasured. |
 
 ## 3. Cache behavior: what is measured and what is not
 
@@ -106,8 +106,8 @@ IDs / 711 model entries** is maintained in `docs/cache-test-matrix.md`.
 | Anthropic Messages | Explicit `cache_control` on system/tools and the last block of the last `user` message | One controlled direct Haiku 4.5 run retained 4,338 cached prefix tokens and wrote 44 when only the synthetic tail changed; its repeat read 4,382. Provider/model-specific, not universal. |
 | Bedrock Converse + supported Claude | Explicit system and final-user `cachePoint` blocks | Same placement concern, but no project measurement. Nova is documented in Pi source as automatic instead. |
 | OpenAI Responses / Codex / GitHub Copilot | Pi sends a session-derived `prompt_cache_key`; no Anthropic-style per-message marker | The historical Codex sample showed no read cliff. One controlled Copilot Terra run with a fixed key retained 7,132 cached prefix tokens and wrote 20 across the tail change; its repeat read 7,152. |
-| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Two controlled Gemini runs reproduced a B2-only 6,111-token hit, but A2 never hit, so the A→B effect remains unresolved. |
-| OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Provider name alone is insufficient to infer request or cache semantics; current fixture evidence is inconclusive. |
+| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Exact models differed: Gemini 3.5 retained 4,074 across A2→B1; 3.8 had A2 hit→B1 miss→B2 hit; 3.6 never hit; 3.7 and 2.5 were B2-only. |
+| OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Wafer DeepSeek V4 Flash first reported reuse on changed-tail B1 (6,912); Cerebras qwen-3.8-27b had an A2 hit, B1 miss, then B2 hit (7,168). Other providers and siblings remain unmeasured. |
 
 Official provider documentation agrees on the important boundary, not on one common mechanism:
 Anthropic supports automatic caching or block-level explicit breakpoints; OpenAI reuses eligible
@@ -130,18 +130,24 @@ three January 2026 session files include nonzero `cacheRead`/`cacheWrite` values
 session format can carry those counters. None of the three files contains a mini-self-org call or
 result, and no serialized request payload was persisted, so they provide **zero workpad-tail evidence**.
 
-**Measured Gemini probe, bounded result:** two immediate, structurally controlled
-`google/gemini-2.5-flash` runs changed only a synthetic trailing-sheet value. Both runs produced the
-same provider-reported sequence: A1 `6684/0`, A2 `6684/0`, B1 `6683/0`, B2 `572/6111`
-(`input/cacheRead`; `cacheWrite` is always zero in Pi's Google adapter). Request hashes were equal
-within A and B, differed across A/B, and became equal across all four after redacting exactly the
-controlled tail. This proves Pi recorded Gemini implicit-cache reuse on the repeated B request. It
-does **not** show whether the A→B tail change preserved or discarded an already-warm prefix, because
-neither A request reported a hit; order, propagation delay, and provider-managed state remain confounded.
+**Measured Gemini probes, bounded and model-specific:** all exact payload controls passed. Gemini
+3.5 Flash reported `4074` cached tokens on A2, first B, and B2, directly retaining its reported prefix
+across the changed tail. Gemini 3.8 Flash instead reported `4074` on A2, zero on first B, and `4074`
+on B2: a controlled first-B miss. Gemini 3.6 Flash reported no hits, while 3.7 Flash reported only a
+`4074` B2 hit. The two earlier 2.5 Flash runs likewise produced only B2 hits (`6111`). These differences
+for one provider ID forbid a provider-wide Gemini verdict; zero or delayed hits can reflect model policy,
+propagation, or routing rather than payload drift.
+
+**Measured OpenAI-compatible probes, bounded and model-specific:** Wafer DeepSeek V4 Flash reported
+no A2 hit but read `6912` cached tokens on the first never-before-sent B request and again on B2, with
+only `256` uncached input. Cerebras qwen-3.8-27b reported an A2 `7168` hit, zero on first B, then a B2
+`7168` hit. Both passed exact A/B payload controls. The Wafer result supports prefix preservation on
+that route; the Cerebras result is an adverse first-B observation requiring replication, not a rule for
+its two sibling models.
 
 **Still unknown:** Bedrock behavior with the volatile explicit final-user breakpoint; replication and
-external validity of the single direct-Anthropic and Copilot-Terra runs; real-workpad write amplification
-outside the synthetic fixture; and the A→B effect on Gemini and compatible APIs. Therefore:
+external validity of the exact-model runs; real-workpad write amplification outside the synthetic
+fixture; and the cause and stability of the observed first-B misses. Therefore:
 
 - do not claim that the transient tail kills caching;
 - do not transfer Codex cache results to Anthropic, Bedrock, Gemini, or compatible APIs;
@@ -223,7 +229,7 @@ the default stays *hold* until data says otherwise.
 | **G2** | Re-measure workpad bytes / session bytes and read cliffs **per adapter/model** | Whether the sheet has become worth engineering for on a specific provider path | Read-only over session data; never pool provider paths |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
 | **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
-| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Direct Haiku and Copilot Terra retained their prefixes with 44/20-token tail writes in one run each; Gemini A→B unresolved; Bedrock unrun; never pool paths |
+| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Retention: Haiku, Copilot Terra, Wafer, Gemini 3.5. First-B misses: Cerebras qwen-3.8 and Gemini 3.8. Delayed/no-hit: Gemini 2.5/3.7 and 3.6. Bedrock unrun; never pool paths. |
 
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
@@ -319,13 +325,20 @@ input without replaying conversation history. The controlled run then passed eve
 read 7,153 tokens; after only the tail changed, B1 read 7,132 and wrote 20; B2 read 7,152. This is
 bounded evidence against the reported full-cache-loss concern on this exact path and build.
 
-**Gemini:** two complete immediate runs on `google/gemini-2.5-flash` passed every structural control,
-with no explicit cache marker, exactly one changed tail, and the identical usage pattern shown in §3.
-The repeated B2 hit is reproducible provider-counter evidence. The A→B effect remains **undetermined**
-because A2 never hit in either run; a third ad hoc sequence was deliberately not run.
+**Gemini:** the two earlier 2.5 Flash runs and requested 3.5, 3.6, 3.7, and 3.8 Flash runs passed
+every structural control. Outcomes differ by exact model: 3.5 retained a 4,074-token read across
+A2→B1; 3.8 produced A2 hit→B1 miss→B2 hit; 3.6 never hit; 3.7 and 2.5 were B2-only. The provider ID
+therefore has **mixed** evidence, not one pooled result.
 
-G5 now supports the existing **hold** decision for direct Haiku and Copilot Terra; it does not close
-Bedrock, Gemini A→B, replication, or future-build boundaries, and it does not signal a `src/` change.
+**OpenAI-compatible endpoints:** Wafer's only listed model, `DeepSeek-V4-Flash-0731-Fast`, first
+reported reuse on the changed-tail B1 (6,912) and repeated it on B2. Cerebras `qwen-3.8-27b` produced
+a controlled A2 hit→B1 miss→B2 hit sequence (7,168). Its `gemma-4-31b` and `gpt-oss-120b` siblings
+remain untested. An initial Wafer A1 rejected unsupported `minimal` reasoning and safely stopped; the
+successful runs used `low`.
+
+G5 still supports the existing **hold**: favorable exact-model runs do not establish universal safety,
+and adverse Cerebras/Gemini 3.8 observations need replication before they justify changing generic
+message placement. Bedrock and future-build behavior remain open; no `src/` change is signalled.
 
 **Harness boundary:** Pi's supported `before_provider_request` hook is observational; extension errors
 are caught and cannot abort before the first transport. A1 is therefore an explicit one-call canary.
