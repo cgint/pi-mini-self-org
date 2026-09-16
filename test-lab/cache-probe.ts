@@ -8,13 +8,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const ANTHROPIC = "anthropic";
 const GOOGLE = "google";
-const PROFILES = new Set([ANTHROPIC, GOOGLE]);
-const ANCHOR_BYTES = { [ANTHROPIC]: 16_384, [GOOGLE]: 32_768 } as const;
+const GITHUB_COPILOT = "github-copilot";
+const PROFILES = new Set([ANTHROPIC, GOOGLE, GITHUB_COPILOT]);
+const ANCHOR_BYTES = { [ANTHROPIC]: 16_384, [GOOGLE]: 32_768, [GITHUB_COPILOT]: 32_768 } as const;
 const SHEET_TYPE = "g5-cache-probe-sheet";
 const STEPS = new Set(["A1", "A2", "B1", "B2"]);
 const CONTROL_SENTINEL = "__G5_TRAILING_SHEET_CONTROL__";
 
-type Profile = typeof ANTHROPIC | typeof GOOGLE;
+type Profile = typeof ANTHROPIC | typeof GOOGLE | typeof GITHUB_COPILOT;
 type ProbeConfig = { runId: string; step: string; requestUuid: string; tail: string; provider: Profile; model: string; logFile: string };
 type UnknownRecord = Record<string, unknown>;
 type Validation = { validationOk: true; serialization?: UnknownRecord } | { validationOk: false; validationErrorCode: string };
@@ -30,7 +31,7 @@ function required(name: string): string {
 }
 function config(): ProbeConfig {
   const provider = required("CACHE_PROBE_PROVIDER");
-  if (!PROFILES.has(provider)) throw new Error("cache-probe supports only providers anthropic and google");
+  if (!PROFILES.has(provider)) throw new Error("cache-probe supports only providers anthropic, google, and github-copilot");
   const step = required("CACHE_PROBE_STEP");
   if (!STEPS.has(step)) throw new Error("CACHE_PROBE_STEP must be A1, A2, B1, or B2");
   return { runId: required("CACHE_PROBE_RUN_ID"), step, requestUuid: required("CACHE_PROBE_REQUEST_UUID"), tail: required("CACHE_PROBE_TAIL_VALUE"), provider: provider as Profile, model: required("CACHE_PROBE_MODEL"), logFile: resolve(required("CACHE_PROBE_LOG")) };
@@ -85,6 +86,31 @@ function validateGooglePayload(payload: unknown, probe: ProbeConfig): UnknownRec
   if (tailMatches !== 1) throw new ProbeValidationError("GOOGLE_TRAILING_SHEET_MISMATCH");
   return { systemInstruction: { bytes: Buffer.byteLength(systemInstruction), sha256: sha256(systemInstruction), anchorBytes: ANCHOR_BYTES[GOOGLE], anchorSha256: sha256(anchor) }, contents: { count: contents.length, trailingSheetMatches: tailMatches, trailingSheet: { bytes: Buffer.byteLength(tailContent), sha256: sha256(tailContent) } } };
 }
+function validateCopilotPayload(payload: unknown, probe: ProbeConfig): UnknownRecord {
+  const request = record(payload, "COPILOT_REQUEST_SHAPE");
+  const input = request.input;
+  if (request.model !== probe.model) throw new ProbeValidationError("COPILOT_MODEL_MISMATCH");
+  if (!Array.isArray(input)) throw new ProbeValidationError("COPILOT_INPUT_SHAPE");
+  if (typeof request.prompt_cache_key !== "string" || request.prompt_cache_key.length === 0) throw new ProbeValidationError("COPILOT_PROMPT_CACHE_KEY_ABSENT");
+  const anchor = stableAnchor(GITHUB_COPILOT);
+  const systemItems = input.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const message = item as UnknownRecord;
+    return (message.role === "developer" || message.role === "system") && typeof message.content === "string" && message.content.endsWith(anchor);
+  });
+  if (systemItems.length !== 1) throw new ProbeValidationError("COPILOT_SYSTEM_ANCHOR_MISMATCH");
+  const tailContent = `Trailing sheet value: ${probe.tail}`;
+  let tailMatches = 0;
+  for (const item of input) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || (item as UnknownRecord).role !== "user") continue;
+    const content = (item as UnknownRecord).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) if (part && typeof part === "object" && !Array.isArray(part) && (part as UnknownRecord).text === tailContent) tailMatches++;
+  }
+  if (tailMatches !== 1) throw new ProbeValidationError("COPILOT_TRAILING_SHEET_MISMATCH");
+  const systemContent = (systemItems[0] as UnknownRecord).content as string;
+  return { input: { count: input.length, trailingSheetMatches: tailMatches }, promptCacheKeySha256: sha256(request.prompt_cache_key), systemInstruction: { bytes: Buffer.byteLength(systemContent), sha256: sha256(systemContent), anchorBytes: ANCHOR_BYTES[GITHUB_COPILOT], anchorSha256: sha256(anchor) } };
+}
 function validatePayload(payload: unknown, probe: ProbeConfig, cacheMarkerPaths: string[]): Validation {
   try {
     if (probe.provider === ANTHROPIC) {
@@ -103,7 +129,8 @@ function validatePayload(payload: unknown, probe: ProbeConfig, cacheMarkerPaths:
       }
       return { validationOk: true };
     }
-    return { validationOk: true, serialization: validateGooglePayload(payload, probe) };
+    if (probe.provider === GOOGLE) return { validationOk: true, serialization: validateGooglePayload(payload, probe) };
+    return { validationOk: true, serialization: validateCopilotPayload(payload, probe) };
   } catch (error) {
     return { validationOk: false, validationErrorCode: error instanceof ProbeValidationError ? error.code : "VALIDATION_EXCEPTION" };
   }

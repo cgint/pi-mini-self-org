@@ -1,25 +1,44 @@
 {
-  "schema": 1,
+  "schema": 2,
   "date": "2026-09-16",
   "piRuntimeVersion": "0.85.1",
-  "scope": "Bounded structural and provider-reported usage evidence; not proof of cache causality.",
+  "scope": "Bounded structural and provider-reported usage evidence; not proof of universal or future cache behavior.",
   "harness": {
     "extension": {
       "path": "test-lab/cache-probe.ts",
-      "sha256": "ec83a75f4bdb920e55d035ada9d47636a062bb0e47c04dee5a205e0ed8e71d0a"
+      "sha256": "8d5c0f2461472175f17fadb891a567092f12dd65894ff701b67710e582328a2e"
     },
     "runner": {
       "path": "test-lab/cache-probe-run.sh",
-      "sha256": "531a02712ff5213f5b4f4a5ddc4527bb9b9515a354213f7428add45f71c023f6"
+      "sha256": "0e610414fe4289ed879369bc7914d7db546cf31d2b2d818e69e5c622416da3c8"
     },
-    "versionNote": "The persisted harness hash is the final reviewed version. The two Google runs used the immediately preceding version; the only later code change strengthened Anthropic marker validation and did not change the Google profile, payload construction, hashing, or usage capture.",
+    "versionNote": "The two final Anthropic and Copilot runs used these exact harness hashes. The two Google runs used the immediately preceding reviewed version; later changes added Copilot validation and strengthened no Google payload construction, hashing, or usage path.",
     "controls": [
       "A1 and A2 raw payload hashes must match",
       "B1 and B2 raw payload hashes must match",
       "A and B raw payload hashes must differ",
-      "all hashes after replacing exactly the controlled tail must match"
+      "all hashes after replacing exactly the controlled tail must match",
+      "Copilot additionally requires one stable serialized prompt_cache_key across all four calls"
     ]
   },
+  "calibrations": [
+    {
+      "runId": "g5-copilot-terra-20260916",
+      "provider": "github-copilot",
+      "model": "gpt-5.6-terra",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-copilot-terra-20260916.jsonl",
+        "sha256": "8eb5099fa2f89cae3e965251b2c6fc5b92f854b82106053b951a4c683f17fb48"
+      },
+      "completedSteps": ["A1", "A2"],
+      "usageByStep": {
+        "A1": { "input": 3, "output": 55, "cacheRead": 0, "cacheWrite": 7153 },
+        "A2": { "input": 3, "output": 48, "cacheRead": 7153, "cacheWrite": 0 }
+      },
+      "stopReason": "The fail-closed runner stopped before B1 because A1 and A2 differed only in the session-derived prompt_cache_key. This run is calibration evidence, not a tail-change result.",
+      "correction": "The final Copilot profile uses --no-session with the same explicit in-memory session ID for every independent process, keeping prompt_cache_key stable without persisting or replaying conversation context."
+    }
+  ],
   "runs": [
     {
       "runId": "g5-anthropic-haiku-final-20260916",
@@ -35,10 +54,7 @@
         "rawPayloadHash": "8e1864bbba7257e9b72cd8127a0312c59ff629ed05a5f3f94ea8eb7a3bcc1653",
         "canonicalControlHash": "a9d6a7ffbe9024b4fd7a23b0bce77aa9111f632c5c3badb054196ed572a0fc7b",
         "canonicalControlReplacements": 1,
-        "cacheMarkerPaths": [
-          "$.messages[1].content[0].cache_control",
-          "$.system[0].cache_control"
-        ]
+        "cacheMarkerPaths": ["$.messages[1].content[0].cache_control", "$.system[0].cache_control"]
       },
       "response": {
         "stopReason": "error",
@@ -48,7 +64,7 @@
         "errorType": "invalid_request_error",
         "message": "Your credit balance is too low to access the Anthropic API."
       },
-      "boundary": "Validates current serialized marker placement only. No cache-cost conclusion; A2/B1/B2 were not sent."
+      "boundary": "Historical failed canary retained for audit; superseded by the funded complete run below."
     },
     {
       "runId": "g5-google-flash-20260916",
@@ -58,13 +74,7 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-20260916.jsonl",
         "sha256": "e6827312c9472633d010e5fb7b3fcec515cad354ad461896b7d65643e5910dc9"
       },
-      "controls": {
-        "aRawEqual": true,
-        "bRawEqual": true,
-        "aRawDiffersFromB": true,
-        "canonicalControlHashCount": 1,
-        "explicitCacheMarkerPaths": []
-      },
+      "controls": { "aRawEqual": true, "bRawEqual": true, "aRawDiffersFromB": true, "canonicalControlHashCount": 1, "explicitCacheMarkerPaths": [] },
       "usageByStep": {
         "A1": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
         "A2": { "input": 6684, "output": 11, "cacheRead": 0, "cacheWrite": 0 },
@@ -80,30 +90,78 @@
         "localIgnoredPath": "test-lab/cache-probe-g5-google-flash-replication-20260916.jsonl",
         "sha256": "89929ac2dcecce2b88b13253572f099d2d98b0de4def45f8710f4d2da72790a9"
       },
-      "controls": {
-        "aRawEqual": true,
-        "bRawEqual": true,
-        "aRawDiffersFromB": true,
-        "canonicalControlHashCount": 1,
-        "explicitCacheMarkerPaths": []
-      },
+      "controls": { "aRawEqual": true, "bRawEqual": true, "aRawDiffersFromB": true, "canonicalControlHashCount": 1, "explicitCacheMarkerPaths": [] },
       "usageByStep": {
         "A1": { "input": 6684, "output": 14, "cacheRead": 0, "cacheWrite": 0 },
         "A2": { "input": 6684, "output": 19, "cacheRead": 0, "cacheWrite": 0 },
         "B1": { "input": 6683, "output": 40, "cacheRead": 0, "cacheWrite": 0 },
         "B2": { "input": 572, "output": 40, "cacheRead": 6111, "cacheWrite": 0 }
       }
+    },
+    {
+      "runId": "g5-copilot-terra-controlled-20260916",
+      "provider": "github-copilot",
+      "model": "gpt-5.6-terra",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-copilot-terra-controlled-20260916.jsonl",
+        "sha256": "7449dccbfe3beb578aa8061322b74e34ec20391390c4131988ab15c6f8e9b8dc"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "promptCacheKeyHashCount": 1,
+        "explicitCacheMarkerPaths": [],
+        "aRawPayloadHash": "b0d99051a58ca07fa6da2f523494870f7c9bd7760a37110d164a2539efa23fed",
+        "bRawPayloadHash": "8126f7bd61c925b1d4265039c8f5caf7929f3b8eebe4447b3079055e46b174cd",
+        "canonicalControlHash": "f1d9abbf05f112b29b2aee065b73c16e4e0bd6372ccbd12499f2f0a9061e9684"
+      },
+      "usageByStep": {
+        "A1": { "input": 3, "output": 45, "cacheRead": 7153, "cacheWrite": 0 },
+        "A2": { "input": 3, "output": 30, "cacheRead": 7153, "cacheWrite": 0 },
+        "B1": { "input": 3, "output": 50, "cacheRead": 7132, "cacheWrite": 20 },
+        "B2": { "input": 3, "output": 33, "cacheRead": 7152, "cacheWrite": 0 }
+      },
+      "boundary": "One controlled Copilot Pro/Terra run. It shows provider-reported prefix reuse across this synthetic tail change, not a guarantee for other prompts, accounts, models, adapters, regions, or future builds."
+    },
+    {
+      "runId": "g5-anthropic-haiku-controlled-20260916",
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "rawLog": {
+        "localIgnoredPath": "test-lab/cache-probe-g5-anthropic-haiku-controlled-20260916.jsonl",
+        "sha256": "8787c8f4a73b7e8572ef5dc39cd24d3741b663fd958c8274d60d048829a2a504"
+      },
+      "controls": {
+        "aRawEqual": true,
+        "bRawEqual": true,
+        "aRawDiffersFromB": true,
+        "canonicalControlHashCount": 1,
+        "cacheMarkerPaths": ["$.messages[1].content[0].cache_control", "$.system[0].cache_control"],
+        "aRawPayloadHash": "8e1864bbba7257e9b72cd8127a0312c59ff629ed05a5f3f94ea8eb7a3bcc1653",
+        "bRawPayloadHash": "8cd7c129cd2736fdd5fb9ad5223a626d3690e2aaad098354fcfab6c85e11ce35",
+        "canonicalControlHash": "a9d6a7ffbe9024b4fd7a23b0bce77aa9111f632c5c3badb054196ed572a0fc7b"
+      },
+      "usageByStep": {
+        "A1": { "input": 10, "output": 79, "cacheRead": 0, "cacheWrite": 4382 },
+        "A2": { "input": 10, "output": 57, "cacheRead": 4382, "cacheWrite": 0 },
+        "B1": { "input": 10, "output": 90, "cacheRead": 4338, "cacheWrite": 44 },
+        "B2": { "input": 10, "output": 80, "cacheRead": 4382, "cacheWrite": 0 }
+      },
+      "boundary": "One controlled direct-Anthropic/Haiku run. It shows provider-reported prefix reuse and a bounded tail write for this synthetic request, not universal or future behavior."
     }
   ],
   "conclusion": {
     "established": [
-      "Current Pi serializes the synthetic Anthropic tail with system and final-message cache_control markers.",
+      "The controlled Copilot GPT-5.6 Terra run retained 7132 cached prefix tokens when only the trailing sheet changed and reported a 20-token cache write; the repeat read 7152 cached tokens.",
+      "The controlled direct Anthropic Haiku 4.5 run retained 4338 cached prefix tokens when only the explicitly marked trailing sheet changed and reported a 44-token cache write; the repeat read 4382 cached tokens.",
       "Both controlled Gemini runs reported the same B2-only 6111-token cacheRead pattern."
     ],
     "notEstablished": [
-      "Anthropic workpad-tail read or write cost.",
+      "Universal cache safety across providers, models, accounts, regions, prompts, or future Pi/provider builds.",
       "Whether changing A to B preserved or invalidated a warm Gemini prefix, because A2 never reported a hit.",
-      "Any provider-independent cache conclusion or source-design gate."
+      "Bedrock behavior or a reason to change the shipped workpad placement."
     ]
   }
 }

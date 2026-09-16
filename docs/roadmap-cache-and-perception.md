@@ -72,8 +72,8 @@ use different cache mechanisms, so this is request anatomy, not a universal cost
 │                    request-local: never persisted                            │
 └────────────────────────────────────────────────────────────────────────────┘
       ★ sits ON the sheet in the Anthropic explicit-marker adapter. This is
-        formally non-monotonic. Its read/write effect is unmeasured; the only
-        read-side sample used OpenAI Codex and does not transfer to this path.
+        formally non-monotonic. One controlled direct-Haiku run retained the
+        stable prefix and rewrote only the 44-token changed tail; do not generalize it.
 ```
 
 Re-derived from source, not from memory:
@@ -92,7 +92,7 @@ Re-derived from source, not from memory:
 | --- | --- | --- | --- | --- |
 | ① | `tool_call` args of every past write | yes, inside the cached prefix | yes | **ACCEPTED** duplication. Also the only in-context proof the state is the agent's *own* prior act — see §4.2 |
 | ② | `toolResult.details.snapshot` | **never** | yes, survives compaction | **SOLVED.** Durable, invisible to the provider, and what reconstruction reads |
-| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Codex showed no read cliff; explicit-marker paths remain unmeasured |
+| ③ | The injected sheet | yes, every turn | no | Live frontier view; also the deepest explicit marker in Pi's Anthropic adapter. Controlled Haiku and Copilot Terra probes retained the stable prefix across a synthetic tail change; Bedrock remains unmeasured |
 
 ## 3. Cache behavior: what is measured and what is not
 
@@ -101,10 +101,10 @@ separated by adapter; Pi 0.85.1 does not emit one provider-neutral cache shape.
 
 | Pi 0.85.1 path | Request-side mechanism observed in installed source | What the current evidence establishes |
 | --- | --- | --- |
-| Anthropic Messages | Explicit `cache_control` on system/tools and the last block of the last `user` message | The trailing sheet receives the deepest message breakpoint. Cost and hit behavior are **unmeasured here**. |
+| Anthropic Messages | Explicit `cache_control` on system/tools and the last block of the last `user` message | One controlled direct Haiku 4.5 run retained 4,338 cached prefix tokens and wrote 44 when only the synthetic tail changed; its repeat read 4,382. Provider/model-specific, not universal. |
 | Bedrock Converse + supported Claude | Explicit system and final-user `cachePoint` blocks | Same placement concern, but no project measurement. Nova is documented in Pi source as automatic instead. |
-| OpenAI Responses / Codex | Current Pi 0.85.1 source sends a session-derived `prompt_cache_key`; no Anthropic-style per-message marker | The historical sample below records this API path/model, but not its unknown Pi build's payload. A key influences routing/accounting; it does not guarantee a hit. |
-| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Relies on Gemini implicit prefix caching in this build; no workpad-specific project measurement. |
+| OpenAI Responses / Codex / GitHub Copilot | Pi sends a session-derived `prompt_cache_key`; no Anthropic-style per-message marker | The historical Codex sample showed no read cliff. One controlled Copilot Terra run with a fixed key retained 7,132 cached prefix tokens and wrote 20 across the tail change; its repeat read 7,152. |
+| Google Generative AI | No explicit cached-content reference in Pi's request object; maps provider cache-hit usage into `cacheRead` | Two controlled Gemini runs reproduced a B2-only 6,111-token hit, but A2 never hit, so the A→B effect remains unresolved. |
 | OpenAI-compatible / Mistral | Compatibility-dependent request fields; adapters can consume cached-token accounting | Provider name alone is insufficient to infer request or cache semantics; current fixture evidence is inconclusive. |
 
 Official provider documentation agrees on the important boundary, not on one common mechanism:
@@ -137,9 +137,9 @@ controlled tail. This proves Pi recorded Gemini implicit-cache reuse on the repe
 does **not** show whether the A→B tail change preserved or discarded an already-warm prefix, because
 neither A request reported a hit; order, propagation delay, and provider-managed state remain confounded.
 
-**Still unknown:** Anthropic/Bedrock behavior with the volatile explicit final-user breakpoint;
-workpad-attributable write amplification; and tail-change effects on Gemini and compatible APIs.
-Therefore:
+**Still unknown:** Bedrock behavior with the volatile explicit final-user breakpoint; replication and
+external validity of the single direct-Anthropic and Copilot-Terra runs; real-workpad write amplification
+outside the synthetic fixture; and the A→B effect on Gemini and compatible APIs. Therefore:
 
 - do not claim that the transient tail kills caching;
 - do not transfer Codex cache results to Anthropic, Bedrock, Gemini, or compatible APIs;
@@ -160,9 +160,10 @@ Therefore:
 
 ### 4.2 ACCEPTED — will not be solved here
 
-- **Current tail placement.** It preserves frontier recency and showed no read-side re-read
-  cliff on the measured OpenAI Codex path. Keep it unless write-side or cross-provider evidence
-  demonstrates material harm; Anthropic and Bedrock explicit-final-user behavior remains open,
+- **Current tail placement.** It preserves frontier recency, showed no read-side re-read cliff on
+  the historical OpenAI Codex path, and retained the stable prefix with only a small tail write in
+  one controlled direct-Anthropic run (44 tokens) and one Copilot-Terra run (20 tokens). Keep it
+  unless replicated provider-specific evidence demonstrates material harm; Bedrock remains open,
   and explicit boundary control is possible upstream work rather than a proven generic fix.
 - **Duplicate copies in ①.** Full snapshots stay in every historical `tool_call` arg. Their
   persisted size was 0.48% in the measured session, and no behavioral or provider-cost harm has
@@ -186,9 +187,8 @@ Therefore:
 
 ### 4.4 BLIND — not observable today
 
-- **Anthropic workpad-tail measurement.** A controlled A1 canary serialized both system and final-
-  message `cache_control`, then Anthropic returned `credit balance too low`; its usage counters were
-  zero and the fail-closed runner sent no later calls. The explicit-final-user cost remains unknown.
+- **Bedrock and long-run external validity.** No Bedrock run exists, and one synthetic direct-
+  Anthropic/Terra sequence cannot establish behavior across accounts, regions, prompts, or future builds.
 - **Which pi build produced a past session.** Session files store schema `version: 3`, not a
   release, so the 0.48% sample is indicative rather than current.
 
@@ -221,7 +221,7 @@ the default stays *hold* until data says otherwise.
 | **G2** | Re-measure workpad bytes / session bytes and read cliffs **per adapter/model** | Whether the sheet has become worth engineering for on a specific provider path | Read-only over session data; never pool provider paths |
 | **G3** | Watch for a concrete behavioural failure, defined in advance | Whether ①'s duplication is buying something real | Observation in normal use |
 | **G4** | Upstream: expose stable/volatile context metadata to provider adapters | Whether explicit-cache providers can anchor before volatile context without changing semantic placement | Outside this repo; justified only after measured write-side or provider-specific harm |
-| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Gemini probe ran but did not isolate A→B effect; Anthropic is credit-blocked; never pool paths |
+| **G5** | Use `test-lab/cache-probe*` to capture controlled serialized payload hashes plus read/write usage | Whether a tail-only change causes misses or write amplification on each adapter | Direct Haiku and Copilot Terra retained their prefixes with 44/20-token tail writes in one run each; Gemini A→B unresolved; Bedrock unrun; never pool paths |
 
 **Standing rule:** no change to `src/` without a gate signal. Both redesign proposals made so
 far were requested before the symptom they addressed had ever been measured, and both were
@@ -304,17 +304,26 @@ credentials. Raw hashes must satisfy A1=A2, B1=B2, and A≠B, while a copy with 
 replaced by a sentinel must hash identically across all four. Live execution requires an explicit
 confirmation string and stops between calls on missing or ambiguous evidence.
 
-**Anthropic:** the final-schema A1 artifact verifies `cache_control` at the system block and final
-message block, then records `stopReason:"error"` with zero usage; A2/B1/B2 were not sent. The live
-terminal additionally returned `credit balance too low`; that classification is explicitly stored as
-a terminal observation, not misrepresented as a JSONL field, in the bounded evidence file. This
-validates current request anatomy only, not cache cost.
+**Anthropic:** the funded complete `claude-haiku-4-5` run verifies `cache_control` on the system
+block and final message in all four requests. A1 wrote 4,382 cache tokens; A2 read 4,382. After only
+the synthetic tail changed, B1 still read 4,338 and wrote 44; B2 read 4,382. The earlier credit-
+blocked A1 remains in the evidence artifact as superseded audit history. This is strong bounded
+evidence that the volatile final breakpoint did not force a full-prefix rewrite in this run.
+
+**GitHub Copilot / GPT-5.6 Terra:** an initial calibration correctly stopped after A2 because Pi's
+fresh in-memory sessions produced different serialized `prompt_cache_key` values. The final profile
+uses the same explicit **non-persisted** session ID for each process, stabilizing that real routing
+input without replaying conversation history. The controlled run then passed every hash: A1/A2 each
+read 7,153 tokens; after only the tail changed, B1 read 7,132 and wrote 20; B2 read 7,152. This is
+bounded evidence against the reported full-cache-loss concern on this exact path and build.
 
 **Gemini:** two complete immediate runs on `google/gemini-2.5-flash` passed every structural control,
 with no explicit cache marker, exactly one changed tail, and the identical usage pattern shown in §3.
 The repeated B2 hit is reproducible provider-counter evidence. The A→B effect remains **undetermined**
-because A2 never hit in either run; a third ad hoc sequence was deliberately not run. No cache or
-delivery design gate moved.
+because A2 never hit in either run; a third ad hoc sequence was deliberately not run.
+
+G5 now supports the existing **hold** decision for direct Haiku and Copilot Terra; it does not close
+Bedrock, Gemini A→B, replication, or future-build boundaries, and it does not signal a `src/` change.
 
 **Harness boundary:** Pi's supported `before_provider_request` hook is observational; extension errors
 are caught and cannot abort before the first transport. A1 is therefore an explicit one-call canary.
@@ -336,7 +345,8 @@ pi -ne -e <pi-olla-autodetect>/index.ts [-e ./index.ts] \
 
 - **Environment facts worth keeping.** `-ne` also removes the package that registers the local
   provider, so a nested run must re-add `pi-olla-autodetect` with `-e` or no model resolves at all.
-  The Anthropic path answers `400 credit balance too low`. Local models report
+  At the time, the Anthropic path answered `400 credit balance too low` (later superseded by the
+  funded controlled run in §6c). Local models report
   `cacheRead`/`cacheWrite` = 0 on every row. Endpoint health: `qwen38-flashnext-twins-direct`
   answers, `qwen3.8-27b-...-direct` returns 500, `qwen3.8-27b-...dflash2` returns 404.
 - **The extension works from source under `-ne -e`.** The nested agent registered the tool and
@@ -347,9 +357,9 @@ pi -ne -e <pi-olla-autodetect>/index.ts [-e ./index.ts] \
 
 ### What it did **not** establish
 
-- **Cache cost — unmeasurable here.** Of the paths exercised in this A/B, only the unreachable
-  Anthropic path would stamp `cache_control`; local models expose no cache counters. §3 therefore
-  remains unmeasured for those paths.
+- **Cache cost — unmeasurable in that run.** Of the paths exercised in this A/B, only the then-
+  unreachable Anthropic path would stamp `cache_control`; local models expose no cache counters.
+  The later funded G5 run in §6c supersedes this limitation for direct Haiku only.
 - **Wording effect — null with no power.** Strict injected-block acknowledgements: **0 in arm A
   and 0 in arm B**, across 4 assistant text turns each. Four turns cannot detect a rate that
   appears in long sessions; this is not evidence of no effect.

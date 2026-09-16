@@ -13,13 +13,13 @@ PROVIDER="anthropic"
 MODEL=""
 RUN_ID="g5-$(date +%Y%m%dT%H%M%S)-$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
-usage() { echo "usage: $0 [--dry-run] [--provider anthropic|google] --model MODEL [--run-id ID]" >&2; exit 2; }
+usage() { echo "usage: $0 [--dry-run] [--provider anthropic|google|github-copilot] --model MODEL [--run-id ID]" >&2; exit 2; }
 while (($#)); do
   case "$1" in
     --dry-run) DRY_RUN=true; shift ;;
     --model) MODEL="${2:-}"; shift 2 ;;
     --run-id) RUN_ID="${2:-}"; shift 2 ;;
-    --provider) PROVIDER="${2:-}"; [[ "$PROVIDER" == anthropic || "$PROVIDER" == google ]] || { echo "Only providers anthropic and google are supported." >&2; exit 2; }; shift 2 ;;
+    --provider) PROVIDER="${2:-}"; [[ "$PROVIDER" == anthropic || "$PROVIDER" == google || "$PROVIDER" == github-copilot ]] || { echo "Only providers anthropic, google, and github-copilot are supported." >&2; exit 2; }; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -29,6 +29,8 @@ LOG_FILE="$ROOT/test-lab/cache-probe-${RUN_ID}.jsonl"
 interpretation_warning() {
   if [[ "$PROVIDER" == google ]]; then
     echo "Google profile: Gemini implicit caching has no explicit request marker in Pi; cacheRead is provider-reported evidence only, and cacheWrite=0 is expected adapter behavior, not a failed write."
+  elif [[ "$PROVIDER" == github-copilot ]]; then
+    echo "GitHub Copilot profile: OpenAI Responses cached_tokens/cache_write_tokens are mapped to Pi cacheRead/cacheWrite; counters remain provider-reported evidence, not causal proof."
   else
     echo "Anthropic profile: cache_control markers prove serialized placement only; counters do not establish provider causality by themselves."
   fi
@@ -64,13 +66,18 @@ if (response.stopReason === "error" || !Number.isFinite(response.usage?.input) |
 if (provider === "anthropic") {
   if (!request.cacheMarkerPaths.some(path => path.endsWith(".cache_control"))) throw new Error(`${step}: Anthropic cache_control marker absent`);
   if (!context.systemAnchor || context.systemAnchor.bytes !== 16384) throw new Error(`${step}: Anthropic system anchor evidence absent`);
-} else {
+} else if (provider === "google") {
   if (request.cacheMarkerPaths.length !== 0) throw new Error(`${step}: Google request unexpectedly has an explicit cache marker`);
   const serialized = request.serialization;
   if (!serialized || serialized.systemInstruction?.anchorBytes !== 32768 || !Number.isFinite(serialized.systemInstruction?.bytes) || serialized.systemInstruction.bytes < 32768 || serialized.contents?.trailingSheetMatches !== 1 || !Number.isFinite(serialized.contents?.count) || serialized.contents.count < 1) throw new Error(`${step}: Google serialized provider/model/system/content evidence absent`);
   if (!context.systemAnchor || context.systemAnchor.bytes !== 32768) throw new Error(`${step}: Google system anchor evidence absent`);
   // Pi's Google adapter always maps cachedContentTokenCount to cacheRead and emits cacheWrite=0.
   // cacheWrite is intentionally validated only as a finite adapter counter above.
+} else {
+  if (request.cacheMarkerPaths.length !== 0) throw new Error(`${step}: Copilot Responses request unexpectedly has an explicit cache marker`);
+  const serialized = request.serialization;
+  if (!serialized || typeof serialized.promptCacheKeySha256 !== "string" || serialized.systemInstruction?.anchorBytes !== 32768 || !Number.isFinite(serialized.systemInstruction?.bytes) || serialized.systemInstruction.bytes < 32768 || serialized.input?.trailingSheetMatches !== 1 || !Number.isFinite(serialized.input?.count) || serialized.input.count < 1) throw new Error(`${step}: Copilot serialized provider/model/cache-key/system/input evidence absent`);
+  if (!context.systemAnchor || context.systemAnchor.bytes !== 32768) throw new Error(`${step}: Copilot system anchor evidence absent`);
 }
 NODE
 }
@@ -98,12 +105,14 @@ NODE
 
 run_step() {
   local step="$1" tail="$2" request_uuid
+  local -a pi_args=(--no-extensions --no-context-files --no-tools --no-session --print --provider "$PROVIDER" --model "$MODEL")
   request_uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  # `--no-session --session-id` creates a fresh in-memory session for every process while
+  # keeping Copilot's serialized prompt_cache_key stable across the four stateless calls.
+  if [[ "$PROVIDER" == github-copilot ]]; then pi_args+=(--thinking minimal --session-id "$RUN_ID"); fi
   CACHE_PROBE_RUN_ID="$RUN_ID" CACHE_PROBE_STEP="$step" CACHE_PROBE_REQUEST_UUID="$request_uuid" \
   CACHE_PROBE_TAIL_VALUE="$tail" CACHE_PROBE_PROVIDER="$PROVIDER" CACHE_PROBE_MODEL="$MODEL" CACHE_PROBE_LOG="$LOG_FILE" \
-    pi --no-extensions --no-context-files --no-tools --no-session --print \
-      --provider "$PROVIDER" --model "$MODEL" --extension "$ROOT/test-lab/cache-probe.ts" \
-      "Reply exactly READY."
+    pi "${pi_args[@]}" --extension "$ROOT/test-lab/cache-probe.ts" "Reply exactly READY."
   verify_step "$step" "$request_uuid"
   verify_controls
 }
