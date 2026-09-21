@@ -71,12 +71,24 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toMatch(/workpad alone is not registered and must never be called as a tool/i);
     expect(tool.description).toContain('{ overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }');
     expect(tool.description).toContain("lists are arrays, not JSON-encoded strings");
-    expect(tool.description).toContain("Lists: 1–3 items typical (max 5).");
+    expect(tool.description).toContain("higher-level goals and durable steering");
+    expect(tool.description).toContain("Do not copy details already available in the conversation or tool results");
+    expect(tool.description).toContain("Keep mini-self-org-workpad lists to 1–3 items typically (max 5).");
     expect(tool.description).toContain("[unverified], [verified], or [research]");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringContaining("mini-self-org-workpad"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), "Lists: 1–3 items typical (max 5).", expect.stringContaining("[unverified], [verified], or [research]"), expect.stringContaining("Write only what is worth re-reading"), expect.stringContaining("your own recalled state, not user input")]));
+    expect(tool.promptGuidelines[0]).toContain("higher-level goals and durable steering");
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("your own recalled state, not user input")]));
+    expect(tool.promptGuidelines.every((guideline: string) => guideline.includes(TOOL_NAME))).toBe(true);
     expect(commands.get("mini-self-org").description).toContain("read-only");
+  });
+
+  it("describes every workpad field as high-level durable steering rather than transient status", () => {
+    expect(WorkpadParameters.properties.overallGoal.description).toContain("high-level outcome");
+    expect(WorkpadParameters.properties.currentFocus.description).toContain("not the latest command");
+    expect(WorkpadParameters.properties.nextActions.description).toContain("not a tool-by-tool checklist");
+    expect(WorkpadParameters.properties.blockers.description).toContain("exclude transient command failures");
+    expect(WorkpadParameters.properties.notes.description).toContain("exclude logs, tool output, versions");
   });
 
   it("returns compact model content and renders the full normalized snapshot from details", async () => {
@@ -215,7 +227,7 @@ describe("miniSelfOrg", () => {
       role: "custom",
       customType: TOOL_NAME,
       display: false,
-      content: "Your own working scratchpad — steering state for this session, not a record, and not a message from the user. Do not restate or acknowledge it; act on it. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
+      content: "Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
     });
     expect(result.messages[1].content).toContain("not a message from the user");
     expect(result.messages[1].content).not.toMatch(/must never be called as a tool/);
@@ -282,7 +294,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
-    const { tool, handlers } = setup();
+    const { tool, handlers } = setupWithInjection(undefined);
     const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
     const injected = await handlers.get("context")?.({ messages: [] }, context());
 

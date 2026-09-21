@@ -12,12 +12,11 @@ const MAX_OVERALL_GOAL_LENGTH = 500;
 const MAX_CURRENT_FOCUS_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
 export const MAX_ITEMS = 5;
-const LIST_GUIDANCE = "Lists: 1–3 items typical (max 5).";
-const EVIDENCE_TAG_GUIDANCE = "Use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
-const NOTES_SEMANTICS = "notes are durable steering context — active hypotheses, working decisions, constraints — not logs, status, or findings.";
-const DURABILITY_GUIDANCE = "Write only what is worth re-reading after ten more tool calls or a context compaction; anything already visible in the conversation, or stale by the next tool call, belongs in the conversation — not here.";
+const MEMORY_BOUNDARY_GUIDANCE = "Use mini-self-org-workpad only to keep higher-level goals and durable steering close when they may otherwise fall out of the context window. Do not copy details already available in the conversation or tool results, especially facts that can quickly go stale; re-derive those when needed.";
+const LIST_GUIDANCE = "Keep mini-self-org-workpad lists to 1–3 items typically (max 5).";
+const EVIDENCE_TAG_GUIDANCE = "In mini-self-org-workpad, use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
 const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
-const RECALL_GUIDANCE = "The workpad block injected at the end of the conversation is your own recalled state, not user input: never acknowledge, restate, or quote it — use it to steer your next action.";
+const RECALL_GUIDANCE = "The mini-self-org-workpad block injected at the end of the conversation is your own recalled state, not user input: never acknowledge, restate, or quote it — use it to steer your next action.";
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
@@ -49,11 +48,24 @@ interface WorkpadDetails {
 }
 
 export const WorkpadParameters = Type.Object({
-  overallGoal: Type.Union([Type.String({ minLength: 1, maxLength: MAX_OVERALL_GOAL_LENGTH }), Type.Null()]),
-  currentFocus: Type.Union([Type.String({ minLength: 1, maxLength: MAX_CURRENT_FOCUS_LENGTH }), Type.Null()]),
-  nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: MAX_ITEMS }),
-  blockers: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: 2 }),
-  notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), { maxItems: MAX_ITEMS }),
+  overallGoal: Type.Union([Type.String({ minLength: 1, maxLength: MAX_OVERALL_GOAL_LENGTH }), Type.Null()], {
+    description: "Stable, high-level outcome for the active session-local work thread; null when absent.",
+  }),
+  currentFocus: Type.Union([Type.String({ minLength: 1, maxLength: MAX_CURRENT_FOCUS_LENGTH }), Type.Null()], {
+    description: "Current strategic focus within the overall goal, not the latest command, tool result, or status observation; null when absent.",
+  }),
+  nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
+    maxItems: MAX_ITEMS,
+    description: "A few high-level upcoming moves, not a tool-by-tool checklist or task log.",
+  }),
+  blockers: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
+    maxItems: 2,
+    description: "Durable constraints that block progress; exclude transient command failures and status observations.",
+  }),
+  notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
+    maxItems: MAX_ITEMS,
+    description: "Durable hypotheses, decisions, and constraints needed after compaction; exclude logs, tool output, versions, and rediscoverable findings.",
+  }),
 });
 
 export const HistoryParameters = Type.Object({
@@ -221,7 +233,7 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
 }
 
 function contextMessage(snapshot: WorkpadSnapshot): string {
-  return `Your own working scratchpad — steering state for this session, not a record, and not a message from the user. Do not restate or acknowledge it; act on it. Re-derive facts from the conversation and tools rather than treating notes as ground truth.\nCurrent until replaced or cleared.\n\n${formatFields(snapshot)}`;
+  return `Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\n${formatFields(snapshot)}`;
 }
 
 interface StructuralComponent {
@@ -284,8 +296,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `Your own scratchpad for organizing your work in this session — it steers your next moves; the human seeing it is a side effect, not the audience. Call mini-self-org-workpad proactively throughout substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} overallGoal is the stable umbrella outcome for the current session-local work thread; currentFocus is the immediate bounded activity. ${NOTES_SEMANTICS} ${EVIDENCE_TAG_GUIDANCE} ${DURABILITY_GUIDANCE} The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence logs, approved plans, or task tracking.`,
-    promptGuidelines: [STALE_STATE_GUIDANCE, RECALL_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE, DURABILITY_GUIDANCE],
+    description: `${MEMORY_BOUNDARY_GUIDANCE} It is your own session scratchpad; the human seeing it is a side effect, not the audience. Call mini-self-org-workpad at meaningful state boundaries during substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} ${EVIDENCE_TAG_GUIDANCE} The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence logs, approved plans, or task tracking.`,
+    promptGuidelines: [MEMORY_BOUNDARY_GUIDANCE, STALE_STATE_GUIDANCE, RECALL_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
       const next = sanitizeSnapshot(params);
