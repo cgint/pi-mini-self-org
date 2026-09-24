@@ -36,7 +36,7 @@ The model receives request-local current blocks framed as its own working scratc
 
 ### Injection policy
 
-`MINI_SELF_ORG_INJECTION` is parsed when the extension initializes. Its exact values are:
+`MINI_SELF_ORG_INJECTION` is parsed when the extension initializes. Set it in the environment that starts the Pi session (e.g. your profile's shell profile or env settings) before the extension initializes. Its exact values are:
 
 - `always` (the default when unset) — inject every model request while the workpad is non-empty.
 - `user-boundary` — inject only on the first model request for each user-submitted agent loop.
