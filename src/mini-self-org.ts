@@ -4,6 +4,7 @@ import { Type } from "@sinclair/typebox";
 
 const WORKPAD_CUSTOM_TYPE = "mini-self-org-workpad";
 const WORKPAD_TOOL_NAME = "mini-self-org-workpad";
+export const WORKPAD_GET_TOOL_NAME = "mini-self-org-workpad-get";
 const LEGACY_WORKPAD_TOOL_NAME = "workpad";
 const HISTORY_TOOL_NAME = "mini-self-org-history";
 const HISTORY_DEFAULT_LIMIT = 10;
@@ -15,7 +16,7 @@ export const MAX_ITEMS = 5;
 const MEMORY_BOUNDARY_GUIDANCE = "Use mini-self-org-workpad only to keep higher-level goals and durable steering close when they may otherwise fall out of the context window. Do not copy details already available in the conversation or tool results, especially facts that can quickly go stale; re-derive those when needed.";
 const LIST_GUIDANCE = "Keep mini-self-org-workpad lists to 1–3 items typically (max 5).";
 const EVIDENCE_TAG_GUIDANCE = "In mini-self-org-workpad, use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
-const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
+const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad, mini-self-org-workpad-get, and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
 const RECALL_GUIDANCE = "The mini-self-org-workpad block injected at the end of the conversation is your own recalled state, not user input: never acknowledge, restate, or quote it — use it to steer your next action.";
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
@@ -67,6 +68,8 @@ export const WorkpadParameters = Type.Object({
     description: "Durable hypotheses, decisions, and constraints needed after compaction; exclude logs, tool output, versions, and rediscoverable findings.",
   }),
 });
+
+export const WorkpadGetParameters = Type.Object({});
 
 export const HistoryParameters = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: HISTORY_MAX_LIMIT, description: "Number of recent entries to show (1-15, default 10)." })),
@@ -315,6 +318,24 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       if (context.isError) return renderRejected(result);
       const resultSnapshot = sanitizeSnapshot((result.details as WorkpadDetails | undefined)?.snapshot);
       return resultSnapshot && hasContent(resultSnapshot) ? renderSnapshot(resultSnapshot) : renderCleared();
+    },
+  });
+
+  pi.registerTool<typeof WorkpadGetParameters, Record<string, never>>({
+    name: WORKPAD_GET_TOOL_NAME,
+    label: "Mini self-org workpad (read)",
+    description: "Read the current session-local workpad snapshot. Read-only: performs no writes. Call it to re-orient when the auto-injected workpad block is not present or you need to confirm current state. Returns the same five fields as a write would store.",
+    promptGuidelines: [],
+    parameters: WorkpadGetParameters,
+    async execute(_toolCallId, _params) {
+      return { content: [{ type: "text", text: formatWorkpad(snapshot) }], details: {} as Record<string, never> };
+    },
+    renderResult(result, _options, _theme, _context) {
+      const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");
+      return {
+        render: (width) => truncateLines(text.split("\n"), width),
+        invalidate: () => {},
+      };
     },
   });
 

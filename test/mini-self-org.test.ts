@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory, reconstructSnapshot, sanitizeSnapshot, WorkpadParameters } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructSnapshot, sanitizeSnapshot, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "mini-self-org-workpad";
 type Handler = (event: any, ctx: any) => Promise<any>;
@@ -64,7 +64,8 @@ describe("miniSelfOrg", () => {
   });
 
   it("registers the renamed tool and stale-state guidance", () => {
-    const { tool, commands } = setup();
+    const { tool, tools, commands } = setup();
+    expect(tools.size).toBe(3);
     expect(tool.name).toBe(TOOL_NAME);
     expect(tool.label).toBe("Mini self-org workpad");
     expect(tool.description).toContain("mini-self-org-workpad");
@@ -81,6 +82,34 @@ describe("miniSelfOrg", () => {
     expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("your own recalled state, not user input")]));
     expect(tool.promptGuidelines.every((guideline: string) => guideline.includes(TOOL_NAME))).toBe(true);
     expect(commands.get("mini-self-org").description).toContain("read-only");
+  });
+
+  it("registers a read-only workpad-get tool", async () => {
+    const { tools } = setup();
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+
+    expect(get.name).toBe(WORKPAD_GET_TOOL_NAME);
+    expect(get.label).toBe("Mini self-org workpad (read)");
+    expect(get.promptGuidelines).toEqual([]);
+    expect(TypeCompiler.Compile(WorkpadGetParameters).Check({})).toBe(true);
+    expect((await get.execute("id", {})).content[0].text).toBe(formatWorkpad(emptySnapshot()));
+  });
+
+  it("workpad-get execute returns formatted snapshot and does not mutate state", async () => {
+    const { handlers, tool, tools } = setupWithInjection("scheduled:2");
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const written = await tool.execute("id", valid);
+    const before = await get.execute("id", {});
+    const after = await get.execute("id", {});
+
+    expect(before.content[0].text).toBe(formatWorkpad(written.details.snapshot));
+    expect(after.content[0].text).toBe(before.content[0].text);
+    expect(before.details).toEqual({});
+    expect(get.renderResult(before, {}, {}, {}).render(80)).toEqual(before.content[0].text.split("\n"));
+
+    const contextHandler = handlers.get("context")!;
+    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(0);
+    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
   });
 
   it("describes every workpad field as high-level durable steering rather than transient status", () => {

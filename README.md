@@ -16,6 +16,8 @@ The `mini-self-org-workpad` tool (label: **Mini self-org workpad**) atomically r
 
 The workpad is the agent's **own scratchpad**: it steers the agent's next moves rather than reporting to an external audience. **Durability filter:** write only what is worth re-reading after ten more tool calls or a context compaction — anything already visible in the conversation, or stale by the next tool call, belongs in the conversation, not here. `notes` are durable steering context — active hypotheses, working decisions, constraints — not logs, status, or findings.
 
+The `mini-self-org-workpad-get` tool (label: **Mini self-org workpad (read)**) returns the current session-local workpad snapshot on demand. It is read-only: it performs no writes and does not change the workpad’s injection cadence.
+
 The `mini-self-org-history` tool (label: **Mini self-org focus history**) reads a bounded, newest-last timeline of this branch's past workpad snapshots (timestamps, which fields changed, cleared states), distinguishing overall-goal changes from focus changes. It is read-only and non-authoritative: a re-orientation aid, not project memory, not task tracking, and never a replacement for a workpad update.
 
 It is not project memory, durable cross-session planning or task tracking, or an automatic state update.
@@ -24,7 +26,7 @@ It is not project memory, durable cross-session planning or task tracking, or an
 
 Use the workpad at meaningful state boundaries. When the overall goal, current focus, plan, or blockers materially change, replace the complete snapshot before the next consequential action batch; do not update it ritualistically after every tool call.
 
-**Exact tool names:** The registered tools are `mini-self-org-workpad` and `mini-self-org-history`. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
+**Exact tool names:** The registered tools are `mini-self-org-workpad`, `mini-self-org-workpad-get`, and `mini-self-org-history`. `workpad` is not an alias and is never callable. `nextActions`, `blockers`, and `notes` are arrays, not JSON-encoded array strings.
 
 **Lists:** 1–3 items typical (max 5) for `nextActions` and `notes`; each item is limited to 300 characters. Updates exceeding five items are rejected, not truncated. `blockers` remains capped at two items.
 
