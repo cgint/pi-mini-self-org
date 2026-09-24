@@ -38,9 +38,9 @@ The model receives request-local current blocks framed as its own working scratc
 
 `MINI_SELF_ORG_INJECTION` is parsed when the extension initializes. Set it in the environment that starts the Pi session (e.g. your profile's shell profile or env settings) before the extension initializes. Its exact values are:
 
-- `always` (the default when unset) — inject every model request while the workpad is non-empty.
+- `never` (the default when unset) — never inject the workpad into LLM context; the LLM accesses workpad state only via its tools (`self-org-workpad-set` to update, `self-org-workpad-get` to read, and `self-org-workpad-history` to recall past snapshots).
+- `always` — inject every model request while the workpad is non-empty.
 - `user-boundary` — inject only on the first model request for each user-submitted agent loop.
-- `never` — never inject the workpad into LLM context; the LLM accesses workpad state only via its tools (`self-org-workpad-set` to update, `self-org-workpad-get` to read, and `self-org-workpad-history` to recall past snapshots).
 - `scheduled:N` — inject every positive-safe-integer `N` model requests since the last injection or successful workpad write; `scheduled:1` is equivalent to `always` for a non-empty workpad.
 
 Any other non-empty value is rejected during initialization. In `user-boundary` and `scheduled:N`, the first request after session start/resume, tree navigation, or successful compaction also injects. A successful workpad update or clear resets scheduled cadence. Empty workpads never inject. Even in `never` mode, stale transient blocks are removed on every request. Autonomous tool loops therefore receive no repeated workpad block in `user-boundary`, and only receive it at their configured `scheduled:N` cadence.

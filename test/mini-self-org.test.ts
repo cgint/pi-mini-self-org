@@ -246,8 +246,20 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[1][0]).toContain("Current focus: Legacy");
   });
 
-  it("uses the unset default to inject exactly one canonical current context block only when non-empty", async () => {
-    const { handlers } = setupWithInjection(undefined);
+  it("defaults to never so the pure tools are the LLM access interface", async () => {
+    for (const value of [undefined, ""]) {
+      const { handlers } = setupWithInjection(value);
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
+      await handlers.get("session_start")?.({}, branch);
+      await handlers.get("before_agent_start")?.({}, context());
+      const contextHandler = handlers.get("context")!;
+      expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    }
+  });
+
+  it("uses 'always' to inject exactly one canonical current context block only when non-empty", async () => {
+    const { handlers } = setupWithInjection("always");
     const contextHandler = handlers.get("context");
     const existing = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
     const user = { role: "user", content: "keep", timestamp: 1 };
@@ -269,7 +281,7 @@ describe("miniSelfOrg", () => {
   it("emits byte-identical context content while the snapshot is unchanged", async () => {
     // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
     // unchanged snapshot must not introduce divergence at the tail between requests.
-    const { handlers } = setupWithInjection(undefined);
+    const { handlers } = setupWithInjection("always");
     await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
     const contextHandler = handlers.get("context");
     const first = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
@@ -327,7 +339,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
-    const { tool, handlers } = setupWithInjection(undefined);
+    const { tool, handlers } = setupWithInjection("always");
     const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
     const injected = await handlers.get("context")?.({ messages: [] }, context());
 

@@ -26,9 +26,9 @@ const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or bl
 type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "never" } | { mode: "scheduled"; interval: number };
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
-  if (value === undefined || value === "" || value === "always") return { mode: "always" };
+  if (value === "always") return { mode: "always" };
+  if (value === undefined || value === "" || value === "never") return { mode: "never" };
   if (value === "user-boundary") return { mode: "user-boundary" };
-  if (value === "never") return { mode: "never" };
   const match = /^scheduled:([1-9]\d*)$/.exec(value);
   if (match) {
     const interval = Number(match[1]);
