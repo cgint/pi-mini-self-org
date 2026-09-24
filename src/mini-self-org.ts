@@ -21,17 +21,18 @@ const RECALL_GUIDANCE = "The mini-self-org-workpad block injected at the end of 
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
-type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "scheduled"; interval: number };
+type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "never" } | { mode: "scheduled"; interval: number };
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
   if (value === undefined || value === "" || value === "always") return { mode: "always" };
   if (value === "user-boundary") return { mode: "user-boundary" };
+  if (value === "never") return { mode: "never" };
   const match = /^scheduled:([1-9]\d*)$/.exec(value);
   if (match) {
     const interval = Number(match[1]);
     if (Number.isSafeInteger(interval)) return { mode: "scheduled", interval };
   }
-  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, or scheduled:<positive safe integer>");
+  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, never, or scheduled:<positive safe integer>");
 }
 
 export interface WorkpadSnapshot {
@@ -375,7 +376,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     if (snapshotHasContent) forceNextInjection = false;
     callsSinceLastInjectionOrWrite += 1;
     const scheduled = injectionPolicy.mode === "scheduled" && callsSinceLastInjectionOrWrite >= injectionPolicy.interval;
-    const shouldInject = snapshotHasContent && (injectionPolicy.mode === "always" || userBoundary || recovery || scheduled);
+    const shouldInject = injectionPolicy.mode !== "never" && snapshotHasContent && (injectionPolicy.mode === "always" || userBoundary || recovery || scheduled);
     if (shouldInject) {
       messages.push({
         role: "custom",

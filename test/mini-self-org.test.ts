@@ -376,7 +376,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("accepts only the supported injection policy configuration", () => {
-    for (const value of [undefined, "", "always", "user-boundary", "scheduled:2"]) {
+    for (const value of [undefined, "", "always", "user-boundary", "never", "scheduled:2"]) {
       expect(() => setupWithInjection(value)).not.toThrow();
     }
     for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "other"]) {
@@ -406,6 +406,48 @@ describe("miniSelfOrg", () => {
     await recoveredEmpty.handlers.get("context")!({ messages: [] }, context());
     await recoveredEmpty.tool.execute("id", valid);
     expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, context())).messages).toHaveLength(1);
+  });
+
+  it("never mode: suppresses all injection but still strips stale blocks", async () => {
+    const { handlers, tool, tools } = setupWithInjection("never");
+    const contextHandler = handlers.get("context")!;
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, branch);
+
+    // Even with a populated workpad and session_start (recovery trigger), no injection:
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // Tree navigation (recovery trigger) does not trigger injection either:
+    await handlers.get("session_tree")?.({}, branch);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // User boundary does not trigger injection either:
+    await handlers.get("before_agent_start")?.({}, context());
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // Stale blocks are still stripped:
+    const stale = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
+    const result = await contextHandler({ messages: [stale] }, branch);
+    expect(result.messages).toHaveLength(0);
+    expect(result.messages.find((message: any) => message.customType === TOOL_NAME)).toBeUndefined();
+
+    // Write tool still works and does not trigger injection:
+    await tool.execute("id", valid);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // A rejected write does not trigger injection either:
+    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // Compaction does not trigger injection:
+    await handlers.get("session_compact")?.({}, branch);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+
+    // workpad-get still returns the current snapshot in never mode (no injection needed):
+    const read = await get.execute("id", {});
+    expect(read.isError).toBeUndefined();
+    expect(read.content[0].text).toContain("Overall goal: Ship");
   });
 
   it("schedules injections from writes and recovers after tree navigation and compaction", async () => {
