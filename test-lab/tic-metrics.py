@@ -12,7 +12,7 @@ Metrics per arm:
   pushed_sheets       requests that carried an injected sheet block
   sheet_bytes         [min, max] of pushed blockBytes
   mb_first_mb_last    messagesBefore bookends (continuation evidence)
-  workpad_calls       tool calls named mini-self-org-workpad in the session
+  workpad_calls       write tool calls named self-org-workpad-set, mini-self-org-workpad, or workpad in the session
   assistant_text_blocks  text blocks in assistant messages
   tic_turns           assistant turns containing >=1 tic marker
   tic_counts          per-marker occurrences across all assistant text
@@ -34,6 +34,11 @@ STRONG = [
     "sheet of paper",
 ]
 WEAK = ["workpad", "scratchpad", "mini-self-org"]
+WORKPAD_WRITE_TOOL_NAMES = {
+    "self-org-workpad-set",
+    "mini-self-org-workpad",
+    "workpad",
+}
 
 
 def parse_dump(path):
@@ -88,7 +93,7 @@ def assistant_texts(session_path):
                     or (block.get("function") or {}).get("name")
                     or ""
                 )
-                if name == "mini-self-org-workpad":
+                if name in WORKPAD_WRITE_TOOL_NAMES:
                     pending_workpad = True
                     workpad_calls += 1
     if pending_text_parts or pending_workpad:

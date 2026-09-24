@@ -4,7 +4,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructSnapshot, sanitizeSnapshot, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
 
-const TOOL_NAME = "mini-self-org-workpad";
+const TOOL_NAME = "self-org-workpad-set";
+const HISTORICAL_TOOL_NAME = "mini-self-org-workpad";
+const HISTORY_TOOL_NAME = "self-org-workpad-history";
+const WORKPAD_CUSTOM_TYPE = "mini-self-org-workpad";
 type Handler = (event: any, ctx: any) => Promise<any>;
 
 function setup() {
@@ -63,18 +66,18 @@ describe("miniSelfOrg", () => {
     expect(sanitizeSnapshot({ overallGoal: "Partial current", goal: "Legacy fallback", nextActions: [], blockers: [], notes: [] })).toBeUndefined();
   });
 
-  it("registers the renamed tool and stale-state guidance", () => {
+  it("registers exactly the renamed callable tools and stale-state guidance", () => {
     const { tool, tools, commands } = setup();
-    expect(tools.size).toBe(3);
+    expect([...tools.keys()]).toEqual([TOOL_NAME, WORKPAD_GET_TOOL_NAME, HISTORY_TOOL_NAME]);
     expect(tool.name).toBe(TOOL_NAME);
     expect(tool.label).toBe("Mini self-org workpad");
-    expect(tool.description).toContain("mini-self-org-workpad");
+    expect(tool.description).toContain(TOOL_NAME);
     expect(tool.description).toMatch(/workpad alone is not registered and must never be called as a tool/i);
     expect(tool.description).toContain('{ overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }');
     expect(tool.description).toContain("lists are arrays, not JSON-encoded strings");
     expect(tool.description).toContain("higher-level goals and durable steering");
     expect(tool.description).toContain("Do not copy details already available in the conversation or tool results");
-    expect(tool.description).toContain("Keep mini-self-org-workpad lists to 1–3 items typically (max 5).");
+    expect(tool.description).toContain("Keep self-org-workpad-set lists to 1–3 items typically (max 5).");
     expect(tool.description).toContain("[unverified], [verified], or [research]");
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
@@ -164,7 +167,7 @@ describe("miniSelfOrg", () => {
   it("renders harness validation failures as rejected with their error item", () => {
     const { tool } = setup();
     const rejected = {
-      content: [{ type: "text", text: "Validation failed for tool \"mini-self-org-workpad\":\n  - nextActions.0: must be string\nReceived arguments: ..." }],
+      content: [{ type: "text", text: `Validation failed for tool "${TOOL_NAME}":\n  - nextActions.0: must be string\nReceived arguments: ...` }],
       details: {},
     };
 
@@ -226,11 +229,12 @@ describe("miniSelfOrg", () => {
     }
   });
 
-  it("reconstructs the last valid snapshot from legacy and current tool results", async () => {
+  it("reconstructs the last valid snapshot from legacy, historical, and current write tool results", async () => {
     const { handlers, commands } = setup();
     const legacy = { goal: "Legacy", nextActions: [], blockers: [], notes: [] };
+    const historical = { overallGoal: "Historical work thread", currentFocus: "Historical", nextActions: [], blockers: [], notes: [] };
     const current = { overallGoal: "Current work thread", currentFocus: "Current", nextActions: ["Do it"], blockers: [], notes: [] };
-    await handlers.get("session_start")?.({}, context([workpadEntry("workpad", legacy), workpadEntry(TOOL_NAME, current)]));
+    await handlers.get("session_start")?.({}, context([workpadEntry("workpad", legacy), workpadEntry(HISTORICAL_TOOL_NAME, historical), workpadEntry(TOOL_NAME, current), workpadEntry(HISTORY_TOOL_NAME, { overallGoal: "Ignored history read", currentFocus: "Ignored", nextActions: [], blockers: [], notes: [] })]));
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
     expect(notify.mock.calls[0][0]).toContain("Overall goal: Current work thread");
@@ -245,7 +249,7 @@ describe("miniSelfOrg", () => {
   it("uses the unset default to inject exactly one canonical current context block only when non-empty", async () => {
     const { handlers } = setupWithInjection(undefined);
     const contextHandler = handlers.get("context");
-    const existing = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
+    const existing = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
     const user = { role: "user", content: "keep", timestamp: 1 };
     expect(await contextHandler?.({ messages: [user, existing] }, context())).toEqual({ messages: [user] });
 
@@ -254,7 +258,7 @@ describe("miniSelfOrg", () => {
     expect(result.messages).toHaveLength(2);
     expect(result.messages[1]).toMatchObject({
       role: "custom",
-      customType: TOOL_NAME,
+      customType: WORKPAD_CUSTOM_TYPE,
       display: false,
       content: "Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
     });
@@ -280,7 +284,7 @@ describe("miniSelfOrg", () => {
     const A2 = { overallGoal: "Back to A", currentFocus: "Resume", nextActions: [], blockers: [], notes: ["n"] };
     const entries = [
       workpadEntry("workpad", A),
-      workpadEntry(TOOL_NAME, A),
+      workpadEntry(HISTORICAL_TOOL_NAME, A),
       workpadEntry(TOOL_NAME, B),
       workpadEntry(TOOL_NAME, cleared),
       workpadEntry(TOOL_NAME, { ...A2, nextActions: undefined }),
@@ -319,7 +323,7 @@ describe("miniSelfOrg", () => {
     expect(text.split("\n")[0]).toBe("Focus history (branch-local, newest last) — 2 of 2, non-authoritative:");
     expect(text.split("\n")[1]).toMatch(/^\[\d{2}:\d{2}\] start: Overall goal: First; Current focus: Inspect$/);
     expect(text.split("\n")[2]).toBe("[--:--] — cleared —");
-    expect(formatFocusHistory(reconstructHistory(context([])))).toBe("No focus history yet — this branch has no mini-self-org-workpad updates.");
+    expect(formatFocusHistory(reconstructHistory(context([])))).toBe("No focus history yet — this branch has no self-org-workpad-set updates.");
   });
 
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
@@ -334,9 +338,9 @@ describe("miniSelfOrg", () => {
     expect(emptySnapshot()).toEqual({ overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
   });
 
-  it("registers a read-only mini-self-org-history tool with re-orientation guidance", () => {
+  it("registers a read-only self-org-workpad-history tool with re-orientation guidance", () => {
     const { tool, tools } = setup();
-    const history = tools.get("mini-self-org-history");
+    const history = tools.get(HISTORY_TOOL_NAME);
     expect(history.label).toBe("Mini self-org focus history");
     expect(history.description).toContain("non-authoritative");
     expect(history.description).toContain("focus history");
@@ -346,12 +350,12 @@ describe("miniSelfOrg", () => {
     expect(history.description).toContain("overall goal");
     expect(history.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("after context compaction")]));
     expect(history.parameters.properties.limit.description).toContain("1-15");
-    expect(tool.description).toContain("read via mini-self-org-history");
+    expect(tool.description).toContain("read via self-org-workpad-history");
   });
 
   it("validates history parameters through the TypeBox compiler", () => {
     const { tools } = setup();
-    const compiler = TypeCompiler.Compile(tools.get("mini-self-org-history").parameters);
+    const compiler = TypeCompiler.Compile(tools.get(HISTORY_TOOL_NAME).parameters);
     expect(compiler.Check({})).toBe(true);
     expect(compiler.Check({ limit: 3 })).toBe(true);
     expect(compiler.Check({ limit: 0 })).toBe(false);
@@ -361,8 +365,8 @@ describe("miniSelfOrg", () => {
 
   it("serves focus history from the tool context and never mutates the current snapshot", async () => {
     const { tool, tools } = setup();
-    const history = tools.get("mini-self-org-history");
-    const entries = [workpadEntry(TOOL_NAME, valid), workpadEntry(TOOL_NAME, emptySnapshot())];
+    const history = tools.get(HISTORY_TOOL_NAME);
+    const entries = [workpadEntry(TOOL_NAME, valid), workpadEntry(HISTORY_TOOL_NAME, { overallGoal: "Ignored history read", currentFocus: "Ignored", nextActions: [], blockers: [], notes: [] }), workpadEntry(TOOL_NAME, emptySnapshot())];
     const result = await history.execute("id", {}, undefined, undefined, context(entries));
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("start: Overall goal: Ship; Current focus: Test focus");
@@ -388,7 +392,7 @@ describe("miniSelfOrg", () => {
     const { handlers } = setupWithInjection("user-boundary");
     const contextHandler = handlers.get("context")!;
     const user = { role: "user", content: "keep", timestamp: 1 };
-    const stale = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
     await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
     expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
     expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
@@ -427,7 +431,7 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // Stale blocks are still stripped:
-    const stale = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
     const result = await contextHandler({ messages: [stale] }, branch);
     expect(result.messages).toHaveLength(0);
     expect(result.messages.find((message: any) => message.customType === TOOL_NAME)).toBeUndefined();
