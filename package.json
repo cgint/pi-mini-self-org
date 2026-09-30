@@ -31,7 +31,7 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0",
-    "@earendil-works/pi-tui": "^0.84.4",
+    "@earendil-works/pi-tui": "^0.99.1",
     "@sinclair/typebox": "^0.34.52"
   },
   "scripts": {
@@ -41,11 +41,15 @@
     "precommit": "tsc --noEmit && npm run test && npm audit --audit-level=moderate"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
-    "@earendil-works/pi-tui": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@earendil-works/pi-tui": "^0.99.1",
     "@sinclair/typebox": "^0.34.52",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.6.3",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.2"
+  },
+  "overrides": {
+    "fast-uri": "3.1.8",
+    "postcss": "8.5.28"
   }
 }
