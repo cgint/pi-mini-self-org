@@ -255,3 +255,139 @@ a 40-60 round single-invocation session with a workpad state change at round
 **step 8 (hard-delete of the transient machinery) is NOT cleared by this
 step's measurement** — the delivery gate (7a) passed; the benefit gate (7b)
 is inconclusive, not negative.
+
+---
+
+# Retention test 7b (longer decisive protocol) — 2026-10-03
+
+**Finalization gate for the history-scheduled replacement (step 8 hard-delete,
+commit 2837cce).** The step-7 14-round protocol was inconclusive because the
+task never drifted at that span. This protocol is longer (42 rounds, inside
+the 40-60 target) and includes a **mid-session workpad state change** the model
+must track, so the model either (a) tracks the new state (retention works) or
+(b) drifts back to the old state (retention failed).
+
+## Protocol (identical for all three arms)
+
+- Model: `google/gemini-3.7-flash`, `--thinking low`, N=4, single `pi -p`
+  invocation per arm (42 queued user messages → 42 model rounds; the
+  single-invocation shape is the faithful scripted equivalent of an
+  interactive session — the extension's turn_end counter accumulates only
+  within one process; see the step-7 harness findings).
+- Harness: `test-lab/retention7b-run.sh` (runner) + `test-lab/retention7b-check.ts`
+  (scorer) + `test-lab/retention7b-rescore.js` (convenience rescorer). No
+  `src/` changes in this step.
+- **State-change schedule:** round 1 — set workpad, OLD rule ("bare number
+  only, never add commentary or units", same rule as step 7); round 2 — recall
+  probe; rounds 3-7 — arithmetic filler; **round 8 — CHANGE the workpad** to
+  the NEW rule ("append the unit ms to every number"); rounds 9-11 — filler;
+  rounds 12-42 — filler + 8 **old-vs-new probe** rounds (r12, r16, r20, r24,
+  r28, r32, r36, r40). The probe text is byte-identical in every arm and
+  round: "PROBE: What is 23 + 19? Follow your current workpad rule."
+- **Drift metric:** each probe answer classified NEW-rule-correct ("42 ms" —
+  tracked the round-8 change), OLD-rule-correct (bare "42" — drifted back to
+  the round-1 rule), or OTHER (wrong number / mixed). Score = fraction of
+  probes NEW-rule-correct, per arm.
+- **Classification rule (per the §7 stop-signal):** ADVERSE DRIFT if the
+  history arm is worse than the no-sheet arm, or worse than the always arm on
+  ≥2 provider cells → `git revert 2837cce` + escalate. Otherwise NO ADVERSE
+  DRIFT → the replacement is cleared.
+
+## Three-arm result
+
+| Arm | Policy | Code | Sheets persisted | Probes (r12-40) | NEW / OLD / OTHER | Drift score (frac NEW) | Filler math | Post-change fillers with "ms" | Session JSONL |
+| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| **history-scheduled** | `history-scheduled:4` | current (2837cce) | **11** (custom_message, `display: false`, Q3 self-ownership line, `details.snapshot`; sheets 1-2 carry the OLD rule, sheets 3-11 the NEW rule — the mid-session change is visible in the sheet stream) | 8/8 | 8 / 0 / 0 | **1.00** | 31/31 | 23/23 | `retention7b-history-20261003T115532` |
+| **always (legacy control)** | `always` | pre-step-8 worktree @ **823516d** (`/Users/cgint/dev-external/pi-mini-self-org-step7b-always`) | **0** (transient, request-local — by design; verified: zero `custom_message` rows) | 8/8 | 8 / 0 / 0 | **1.00** | 31/31 | 23/23 | `retention7b-always-20261003T115532` |
+| **no-sheet** | `history-scheduled:99` | current (2837cce) | **0** (verified: zero `custom_message` rows; copies ①/② only) | 8/8 | 8 / 0 / 0 | **1.00** | 31/31 | 23/23 | `retention7b-nosheet-20261003T115532` |
+
+Session JSONLs live under `~/.pi/profiles/minimal/agent/sessions/--Users-cgint-dev-external-pi-mini-self-org--/` (Pi-managed; not committed). Copies + scorer output: `.subagent-step7b/sess-*.jsonl`, `.subagent-step7b/sess-*.score.json` (scratch, not committed).
+
+## Evidence (verified in the JSONLs, not from summaries)
+
+- **All arms, all 8 probes:** the model answered "42 ms" every time — the
+  NEW rule, at every probe round (r12, r16, r20, r24, r28, r32, r36, r40)
+  across all three arms. Verbatim probe answers (all 24): `"42 ms"` × 24.
+  Zero OLD-rule answers, zero OTHER.
+- **History arm sheet stream (the mechanism under test):** 11
+  `custom_message` rows, `customType: "mini-self-org-workpad"`,
+  `display: false`, every body carrying the Q3 self-ownership line ("This is
+  your own workpad state … never acknowledge, restate, or quote this block").
+  Sheet 1 ("Mini self-org workpad — history checkpoint (turn 4)") quotes the
+  OLD rule ("bare number only"); sheet 3 ("… (turn 12)") and sheets 4-11
+  quote the NEW rule ("appending the unit ms"). The re-appended sheet
+  therefore *tracks the state change* — it does not re-inject stale state.
+  (11 sheets vs the ~10 expected at 42 rounds / N=4: same turn-count
+  artifact documented in step 7 — each filler round ends in a toolUse stop,
+  so turn_end fires slightly more than once per round.)
+- **Both workpad tool calls present in every arm:** round-1 SET (old rule) and
+  round-8 CHANGE (new rule) — the model executed the state change in all
+  arms.
+- **Filler math:** 31/31 correct in every arm; after the round-8 change, 23/23
+  post-change fillers carried the "ms" unit in every arm (the model applied
+  the new rule to non-probe rounds as well, in all arms).
+- **Always arm provenance:** run from the git worktree at commit 823516d
+  (pre-step-8; `grep always src/mini-self-org.ts` in the worktree confirms the
+  mode exists there; the current code rejects `always` with "MINI_SELF_ORG_INJECTION
+  must be history-scheduled:<positive safe integer> or off"). The runner was
+  told `--root /Users/cgint/dev-external/pi-mini-self-org-step7b-always` and
+  logged `arm=always policy=always … codeRoot=…/pi-mini-self-org-step7b-always`.
+
+## Result: **NO ADVERSE DRIFT — replacement cleared**
+
+**Classification:** the history arm is **not worse** than either control:
+
+- history (1.00) = always (1.00) on this provider cell — not worse, so the
+  "history < always on ≥2 cells" stop-signal branch is not met;
+- history (1.00) = no-sheet (1.00) — not worse, so the "history < no-sheet"
+  branch is not met.
+
+→ **NO ADVERSE DRIFT.** Step 8 (the hard-delete of the transient machinery,
+2837cce) is **cleared as the final state**; no git-revert is triggered.
+
+**Honest reading (what this does and does not show):**
+
+1. **No drift occurred in any arm** — including the no-sheet arm. On this
+   model at this span, the mid-session rule change was tracked from the
+   in-context round-8 tool call alone (copies ①/②), so the re-appended sheet
+   had no retention gap to close. This is the *same* regime as step 7: the
+   task is still too low-entropy for this model to drift over 42 rounds.
+   The protocol succeeded in *ruling out adverse drift* at this span; it
+   could not demonstrate a positive retention benefit (there was none to
+   measure).
+2. **The mechanism tracks state correctly.** The load-bearing finding for the
+   replacement: the re-appended sheet reflects the *current* workpad state,
+   not a stale copy (sheets 3-11 carry the new rule). History-scheduled is
+   therefore not a drift *source* — it cannot push the model back to a retired
+   rule.
+3. **Single provider cell** (gemini-3.7-flash). The stop-signal's "≥2 cells"
+   branch is not met because the history arm is *not worse anywhere*; a
+   second cell is not required for the NO-ADVERSE-DRIFT classification, but
+   the positive-benefit question (does the sheet ever *help* retention?)
+   remains UNDETERMINED — it needs a task/model where drift actually occurs.
+
+**Status vocabulary:** OBSERVATIONAL → **NO ADVERSE DRIFT (finalization gate
+passed)**. The replacement's delivery (7a) and safety (7b: no adverse drift)
+are verified; its benefit over copies ①/② alone remains unmeasured (no
+drift regime observed on this model at either span).
+
+## Deviations & known limitations (recorded, not hidden)
+
+- **42 rounds, not 40-60+:** inside the spec's range; 8 probe rounds (r12-
+r40, every 4 rounds) — the "round ~3N and later" region per the spec.
+- **Scorer fix mid-run:** the first scorer build had a regex-capture bug in
+  the filler-math check (`numberMatch[1]` = the decimal group, so every
+  integer answer read as null → `fillerMathCorrect` reported 0/31). Fixed
+  before any result was recorded (probe classification was unaffected — it
+  uses the answer text directly); the recorded scores above are from the
+  corrected scorer. The probe answers themselves were additionally
+  re-verified by reading the raw JSONL assistant text in every arm (all 24
+  answers "42 ms").
+- **Scorer limitation:** `hasMsUnit` uses a substring "ms" test; for the
+  recorded answers (all "42 ms") this is exact. Filler answers were inspected
+  per arm and all are "<N>" or "<N> ms" forms.
+- **Timebox overrun:** the step's ~25-minute budget was exceeded (three
+  parallel 42-round live sessions took ~11 min wall-clock, plus harness
+  build, worker-launch retries, and scoring). Result is complete; the
+  overrun is recorded.
+
