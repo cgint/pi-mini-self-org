@@ -148,8 +148,9 @@ MINI_SELF_ORG_INJECTION=history-scheduled:<N>   # N ∈ [1, MAX_SAFE_INTEGER]
 - Grammar: `/^history-scheduled:([1-9]\d*)$/`.
 - Invalid values throw at initialization (existing fail-fast contract).
 - During the transition period (§1 consequence step 1–3), the three existing arms
-  (`always`, `user-boundary`, `scheduled:N`) remain available. After step 3 (transient
-  machinery deleted), `history-scheduled` is the only mode.
+  (`always`, `user-boundary`, `scheduled:N`) were available. **Step 8 (2026-10-03)
+  is now DONE:** the transient machinery is deleted; `history-scheduled:<N>` is the
+  only injection mode (plus `off`). The transition period is over.
 
 ### 4.2 `turn_end` handler — passive append, no continuation
 
@@ -206,8 +207,10 @@ In `history` mode:
 - `pendingUserBoundary`, `forceNextInjection`, `callsSinceLastInjectionOrWrite` are
   no-ops in this mode.
 
-End-state (after transition step 3): the `context` hook is deleted entirely; the
-`turn_end` handler is the sole injection mechanism.
+End-state (current, after step 8, 2026-10-03): the `context` hook's **append path** is
+  deleted entirely; the hook remains as a **strip-only** mechanism (removes stale workpad
+  custom messages from `event.messages`). The `turn_end` handler is the sole injection
+  mechanism.
 
 ### 4.4 Compaction behavior
 
@@ -314,11 +317,7 @@ negative in `cache-test-matrix.md` and stop.
 6. **Docs/README:** document the mode, R1 trade-off (staleness ≤ N turns), Q4 rule.
 7. **Runtime verification:** live session with `history-scheduled:4`; inspect JSONL
    for `custom_message` entries; run §7 retention test + one cache A/B on Gemini 3.7/3.8.
-8. **(After measurement, §1 consequence step 3):** delete transient machinery;
-   `history-scheduled` becomes the ONLY mode; simplify `parseInjectionPolicy`. This is
-   the full-replacement end-state — agreed by secondmate (w2C:p2, 2026-09-16) after the
-   gate-removal round. Until step 8, both mechanisms coexist (history-scheduled mode +
-   the three legacy arms), so a model tier needing per-call recency is never blocked.
+8. **(After measurement, §1 consequence step 3):** ✅ DONE (step 8, 2026-10-03). Transient machinery deleted; `history-scheduled:<N>` is the only injection mode (plus `off`). `parseInjectionPolicy` simplified to accept only `history-scheduled:<N>` or `off`. The `always`, `user-boundary`, and `scheduled:N` modes are removed. The `context` hook is strip-only (no injection). Two src fixes applied: (a) session-cumulative turn counter for Q3 marker integrity (replaces within-invocation `event.turnIndex`); (b) strip scoping confirmed already-correct (F8: history sheets are projected as `role:"user"`, not `role:"custom"`, so the strip filter doesn't match them).
 
 ---
 

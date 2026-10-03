@@ -213,36 +213,7 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[1][0]).toContain("Current focus: Legacy");
   });
 
-  it("uses the unset default to inject exactly one canonical current context block only when non-empty", async () => {
-    const { handlers } = setupWithInjection(undefined);
-    const contextHandler = handlers.get("context");
-    const existing = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    expect(await contextHandler?.({ messages: [user, existing] }, context())).toEqual({ messages: [user] });
 
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const result = (await contextHandler?.({ messages: [user, existing] }, context())) as { messages: any[] };
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[1]).toMatchObject({
-      role: "custom",
-      customType: TOOL_NAME,
-      display: false,
-      content: "Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
-    });
-    expect(result.messages[1].content).toContain("not a message from the user");
-    expect(result.messages[1].content).not.toMatch(/must never be called as a tool/);
-  });
-
-  it("emits byte-identical context content while the snapshot is unchanged", async () => {
-    // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
-    // unchanged snapshot must not introduce divergence at the tail between requests.
-    const { handlers } = setupWithInjection(undefined);
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const contextHandler = handlers.get("context");
-    const first = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
-    const second = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
-    expect(first.messages[0].content).toBe(second.messages[0].content);
-  });
 
   it("reconstructs focus history: forward walk, dedupe, change markers, cleared entries", () => {
     const A = { overallGoal: "Ship", currentFocus: "Plan", nextActions: ["a1"], blockers: [], notes: [] };
@@ -319,17 +290,7 @@ describe("miniSelfOrg", () => {
     expect(formatFocusHistory(reconstructHistory(context([])))).toBe("No focus history yet — this branch has no mini-self-org-workpad updates.");
   });
 
-  it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
-    const { tool, handlers } = setupWithInjection(undefined);
-    const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
-    const injected = await handlers.get("context")?.({ messages: [] }, context());
 
-    expect(focusCleared.content[0].text).toBe("Mini self-org workpad updated.");
-    expect(focusCleared.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
-    expect(tool.renderResult(focusCleared, {}, {}, {}).render(80)).toContain("Overall goal: Ship");
-    expect(injected).toMatchObject({ messages: [expect.objectContaining({ content: expect.stringContaining("Overall goal: Ship") })] });
-    expect(emptySnapshot()).toEqual({ overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
-  });
 
   it("registers a read-only mini-self-org-history tool with re-orientation guidance", () => {
     const { tool, tools } = setup();
@@ -372,84 +333,16 @@ describe("miniSelfOrg", () => {
     expect(update.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
   });
 
-  it("accepts only the supported injection policy configuration", () => {
-    for (const value of [undefined, "", "always", "user-boundary", "scheduled:2"]) {
-      expect(() => setupWithInjection(value)).not.toThrow();
-    }
-    for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "other"]) {
-      expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
-    }
-  });
-
   it("accepts the history-scheduled injection policy", () => {
-    for (const value of ["history-scheduled:8", "always", "user-boundary", "scheduled:4"]) {
+    for (const value of ["history-scheduled:8", "off", undefined, ""]) {
       expect(() => setupWithInjection(value)).not.toThrow();
     }
-    for (const value of ["history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992"]) {
+    for (const value of ["always", "user-boundary", "scheduled:4", "history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992"]) {
       expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
     }
   });
 
-  it("injects user-boundary state once, consumes empty boundaries, and removes stale blocks while suppressed", async () => {
-    const { handlers } = setupWithInjection("user-boundary");
-    const contextHandler = handlers.get("context")!;
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    const stale = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
-    expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
-    await handlers.get("before_agent_start")?.({}, context());
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
 
-    const empty = setupWithInjection("user-boundary");
-    await empty.handlers.get("before_agent_start")?.({}, context());
-    await empty.handlers.get("context")!({ messages: [] }, context());
-    await empty.tool.execute("id", valid);
-    expect((await empty.handlers.get("context")!({ messages: [] }, context())).messages).toEqual([]);
-
-    const recoveredEmpty = setupWithInjection("user-boundary");
-    await recoveredEmpty.handlers.get("session_start")?.({}, context());
-    await recoveredEmpty.handlers.get("context")!({ messages: [] }, context());
-    await recoveredEmpty.tool.execute("id", valid);
-    expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, context())).messages).toHaveLength(1);
-  });
-
-  it("schedules injections from writes and recovers after tree navigation and compaction", async () => {
-    const { handlers, tool } = setupWithInjection("scheduled:2");
-    const contextHandler = handlers.get("context")!;
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    await tool.execute("id", valid);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    await handlers.get("session_tree")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    await handlers.get("session_compact")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-  });
-
-  it("does not reset scheduled cadence after a rejected workpad write", async () => {
-    const { handlers, tool } = setupWithInjection("scheduled:3");
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
-    const contextHandler = handlers.get("context")!;
-    await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-  });
-
-  it("makes scheduled:1 equivalent to always for non-empty state", async () => {
-    const { handlers } = setupWithInjection("scheduled:1");
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const contextHandler = handlers.get("context")!;
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
-  });
 
   it("notifies the focused branch history from the /mini-self-org-history command", async () => {
     const { commands } = setup();
@@ -676,6 +569,28 @@ describe("miniSelfOrg", () => {
     const forced = await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(forced.entries).toHaveLength(1);
     expect(await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("8b: session-cumulative turnIndex in sheet body", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:1");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+    expect(r1.entries[0].content).toContain("turn 1)");
+
+    const r2 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+    expect(r2.entries[0].content).toContain("turn 2)");
+
+    const r3 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+    expect(r3.entries[0].content).toContain("turn 3)");
   });
 
   it("T5: context hook append path removed in history mode (strip-only)", async () => {

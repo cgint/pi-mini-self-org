@@ -30,26 +30,22 @@ Use the workpad at meaningful state boundaries. When the overall goal, current f
 
 **Confidence tags:** Prefix a note or blocker with `[unverified]`, `[verified]`, or `[research]` to label the confidence of a steering item — labels on plans and hypotheses, not an evidence log.
 
-The model receives request-local current blocks framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. They remain active until replaced or cleared.
+The model receives periodic history-checkpoint sheets (persistent, every N turns) framed as its own working scratchpad: steering state, not a record, with facts to be re-derived from the conversation and tools. They remain in the transcript until superseded by the next sheet.
 
 ### Injection policy
 
 `MINI_SELF_ORG_INJECTION` is parsed when the extension initializes. Its exact values are:
 
-- `always` (the default when unset) — inject every model request while the workpad is non-empty.
-- `user-boundary` — inject only on the first model request for each user-submitted agent loop.
-- `scheduled:N` — inject every positive-safe-integer `N` model requests since the last injection or successful workpad write; `scheduled:1` is equivalent to `always` for a non-empty workpad.
-- `history-scheduled:N` — every `N` agent turns (a turn being a `turn_end` event with outcome `completed`), append the workpad snapshot to the session transcript as a persistent `custom_message` entry (customType `mini-self-org-workpad`, `display: false`). In this mode the transient tail-sheet injection is replaced by the `turn_end` append; the `context` hook only strips stale workpad custom messages and never injects.
+- `history-scheduled:<N>` (the default when unset, N=4) — every `N` agent turns (a turn being a `turn_end` event with outcome `completed`), append the workpad snapshot to the session transcript as a persistent `custom_message` entry (customType `mini-self-org-workpad`, `display: false`). The `context` hook only strips stale workpad custom messages and never injects.
+- `off` — no injection (the Q4 no-injection switch).
 
 In `history-scheduled:N` the sheet reflects the snapshot as of the last append, so it can be up to `N` turns stale; a static workpad is re-appended every `N` turns, not sunk — the goal is recall and retention, not deduplication. A workpad write does not reset the `N`-turn window; cadence is governed by the turn counter, not by writes. After a `session_compact`, one forced sheet is appended at the next completed turn (at most one per compaction event). Aborted or errored turns are not counted; only `completed` turns advance the counter.
 
-> **Warning:** `history-scheduled:1` appends a sheet on every completed turn, equivalent in cadence to the legacy `always` mode, and is not recommended for long sessions (token bloat). This is a documented warning, not enforced in code — `N=1` is accepted.
+> **Warning:** `history-scheduled:1` appends a sheet on every completed turn and is not recommended for long sessions (token bloat). This is a documented warning, not enforced in code — `N=1` is accepted.
 
-End state: until the transient mechanism is retired (design step 8, gated on retention measurement and secondmate sign-off), both mechanisms coexist — the `history-scheduled` transcript append here, and the transient tail-sheet in `always`, `user-boundary`, and `scheduled:N`. After step 8, `history-scheduled` becomes the only mode.
+`history-scheduled:<N>` is the only injection mode (plus `off`). Any other non-empty value is rejected during initialization. Empty workpads never append, and stale workpad custom messages are stripped on every request even when injection is suppressed. The context hook is strip-only (no injection path).
 
-Any other non-empty value is rejected during initialization. In `user-boundary` and `scheduled:N`, the first request after session start/resume, tree navigation, or successful compaction also injects. A successful workpad update or clear resets scheduled cadence. Empty workpads never inject, and stale transient blocks are removed on every request even when injection is suppressed. Autonomous tool loops therefore receive no repeated workpad block in `user-boundary`, and only receive it at their configured `scheduled:N` cadence.
-
-Pi serializes this block as the newest `user`-role message and keeps it last, so without framing it reads as something the human just typed and gets echoed back. It is therefore labelled as the agent's own recalled state, not a message from the user, and instructed not to restate it — reinforced both as a `promptGuidelines` bullet in the system prompt and in the block header. Tool-name mechanics are deliberately **excluded** from the block and live only in the tool description and guidelines, so the block carries state alone and stays byte-identical while the snapshot is unchanged. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
+Pi projects history-checkpoint sheets as `user`-role messages in the LLM transcript, so without framing they read as something the human just typed and get echoed back. They are therefore labelled as the agent's own recalled state, not a message from the user, and instructed not to restate it — reinforced both as a `promptGuidelines` bullet in the system prompt and in the sheet header. Tool-name mechanics are deliberately **excluded** from the sheet and live only in the tool description and guidelines, so the sheet carries state alone and stays byte-identical while the snapshot is unchanged. The TUI renderer shows the normalized snapshot, while tool-result details persist active-branch recovery.
 
 Current sessions use `mini-self-org-workpad`. Legacy `workpad` result snapshots remain readable only for recovery: their old `goal` is normalized to `currentFocus`, with `overallGoal: null`; this does not create a callable legacy alias.
 
