@@ -120,3 +120,138 @@ No bulk provider sweep is authorized by this matrix; every live sequence still r
 budgeted provider/model choice and the fail-closed controls in `test-lab/cache-probe-run.sh`.
 
 Raw controlled evidence and hashes remain in `docs/cache-probe-evidence-2026-09-16.json`.
+
+---
+
+# Retention test (design-history-appending-mode §7) — 2026-10-03
+
+Primary measurement for the `history-scheduled:<N>` mode: does the model act on
+workpad steering across spans between appended sheets? Three arms, same model
+(`google/gemini-3.7-flash`), same N=4, same state-change schedule (workpad set at
+round 1; constant thereafter; 14 user messages, one single `pi -p` invocation
+each). Drift metrics per round: goal quoted on the recall probe (round 2),
+12 arithmetic rounds scored bare-number-correct + commentary-leak (workpad rule:
+"bare number only, never add commentary or units").
+
+| Arm | Policy | Sheets persisted | Recall probe (round 2, pre-first-sheet) | Arithmetic (rounds 3-14) | Session JSONL |
+| --- | --- | ---: | --- | --- | --- |
+| **history-scheduled** | `history-scheduled:4` | **4** (custom_message, `display: false`, Q3 self-ownership line, `details.snapshot` 5 fields) | goal quoted verbatim — PASS | 12/12 correct, 0 commentary leaks | `retention-v4-history-20261003T110902` |
+| **always (control)** | `always` | 0 (transient, request-local — by design) | goal quoted verbatim — PASS | 12/12 correct, 0 commentary leaks | `retention-v4-always-20261003T110853` |
+| **no-sheet (copies ①/② only)** | `history-scheduled:99` (history mode, counter never fills; strip-only context hook) | 0 (verified: zero `custom_message` rows) | goal quoted verbatim — PASS | 12/12 correct, 0 commentary leaks | `retention-v4-nosheet-20261003T110850` |
+
+Session JSONLs live under `~/.pi/profiles/minimal/agent/sessions/--Users-cgint-dev-external-pi-mini-self-org--/` (Pi-managed; not committed).
+
+## Result: **OBSERVATIONAL / INCONCLUSIVE — no drift discriminated; stop-signal criteria not met**
+
+**What was measured (all three arms, verified in the JSONLs):**
+
+1. **Mechanism works end-to-end live.** The history arm's session contains 4
+   `custom_message` entries (`customType: "mini-self-org-workpad"`,
+   `display: false`, non-empty `details.snapshot` with all 5 fields, Q3
+   self-ownership line "This is your own workpad state … never acknowledge,
+   restate, or quote this block" present in every body). Cadence: one sheet per
+   4 completed `turn_end`s.
+2. **No model drift in any arm.** All three arms quoted the workpad goal
+   verbatim on the recall probe (round 2 — before any sheet existed in the
+   history arm, so that pass is attributable to copies ①/② alone) and
+   zero-violated the bare-number rule across all 12 arithmetic rounds
+   (including rounds 5-12 in the history arm, i.e. *between* sheet appends).
+3. **Always and no-sheet were behaviorally identical** to history-scheduled in
+   this session: the re-summarized sheet added no observable retention value
+   over copies ①/② at this span (14 rounds) on this model.
+
+**Why this is inconclusive rather than a measured negative:**
+
+- The protocol (§7) is a *drift probe*: it measures whether the model *loses*
+  the steering between appends. No loss was observed in any arm — including
+  the no-sheet arm. The test therefore **fails to discriminate** history vs
+  no-sheet; it does not show history is worse (the §7 stop signal requires the
+  history arm to be *worse than always* on ≥2 provider cells, or *no improvement
+  over copies ①/②* — the second clause is satisfied *in this cell*, but a
+  single non-discriminating cell on a non-drifting task is not the
+  "no improvement" the stop signal targets: the task was too short/low-entropy
+  for drift to occur at all).
+- Single provider cell (gemini-3.7-flash). The stop signal requires ≥2 cells for
+  the "worse than always" branch; the "no improvement" branch is judged on
+  retention *testing* (plural) showing no benefit — one clean, non-drifting
+  cell cannot establish that, and forcing a negative here would be the
+  cherry-picking the honesty bar forbids in the other direction.
+- The workpad content was set at round 1 and never contradicted or
+  state-changed; §7's "state-change schedule" is trivially constant here, which
+  is the regime where recency placement is least likely to matter.
+
+**Classification:** the retention question is **UNDETERMINED at this span on
+this model**: history-scheduled is not observed to be worse than always (no
+adverse drift), but is also not observed to be better than no-sheet (no
+retention gap existed to close). The mechanism's *delivery* (7a) is verified
+positive; its *benefit* (R1) is not yet measured.
+
+## Harness findings (load-bearing, verified)
+
+- **Per-invocation `pi -p` scripting cannot exercise the history counter.**
+  Each `pi -p --session-id X` process fires `session_start` → `reconstruct()`,
+  which resets `turnsSinceLastAppend = 0` (design §4.5), so a one-process-per-turn
+  harness can never accumulate N turns. Confirmed by instrumented debug runs
+  (`MSO_DEBUG` on `test-lab/.debug-extension.ts`): `reconstruct hasContent=true`
+  + `turn_end SKIP counter=1<4` repeating once per invocation.
+- **Single-invocation queued-message runs are the faithful scripted equivalent**
+  of an interactive session: the counter accumulates across model rounds within
+  one process. All three arms above ran this way.
+- **`event.turnIndex` is within-invocation, not session-cumulative** (sheets 2-4
+  of the history arm are labeled `Turn index: 0`, sheet 1 `turn 1`). This makes
+  the Q3 turn-index marker unreliable as a session-position payload-locating aid
+  in multi-invocation sessions. Flagged to Horst; not fixed in this step
+  (no `src/` changes authorized).
+- **Always-arm transient sheet is not visible in the stateless probe payload**
+  (see below) because `--no-session` + no workpad content at call time: the
+  extension's snapshot is empty unless a workpad tool call happened in-session.
+
+## Cache A/B on Gemini (secondary, 7c) — **OBSERVATIONAL**
+
+`test-lab/cache-probe-msr.sh` (live-confirm guard respected; A1/A2/B1/B2
+stateless protocol with the real extension loaded per arm + observing logger;
+`google/gemini-3.7-flash`; run-unique equal-length tails). Controls weakened vs
+G5 and documented in the script header: raw-payload equality is not assertable
+(the legacy transient sheet's `Date.now()` varies per call by design; the
+history arm's sheet lives in the session, not the request). Structural control:
+payload bytes stable within step pairs (A1/A2, B1/B2 delta 0 for all arms),
+per-step record counts validated.
+
+| Arm | Policy | A1 cacheRead | A2 cacheRead | B1 cacheRead | B2 cacheRead | input tokens (A1) | realSheetMarkersInPayload |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| always | `always` | 0 | 0 | 0 | 0 | 588 | 0 |
+| scheduled | `scheduled:4` | 0 | 0 | 0 | 0 | 593 | 0 |
+| history | `history-scheduled:4` | 0 | 0 | 0 | 0 | 589 | 0 |
+
+All `cacheWrite=0` (expected: Gemini implicit caching; Pi's Google adapter maps
+cachedContentTokenCount→cacheRead and emits cacheWrite=0).
+
+**Reading (honest, non-causal):** with a ~590-token payload (far below
+Gemini's implicit-cache activation minimum) and equal-length run-unique tails,
+no arm showed provider-reported warm-prefix reuse on the A→B tail change. This
+is consistent with (but does not prove) the matrix's existing MIXED finding for
+3.7 (run-unique first-B misses, 2026-09-16). It does NOT measure the history
+arm's appended sheet in a live request (that requires a session; see the
+retention sessions, where Gemini reported `cacheRead=0` on every round
+regardless of arm — same counter-blindness at this payload scale).
+
+**Sheet-body cost estimate (§7 secondary):** in T turns the history arm adds
+≈ `min(T/N, distinct-states·T/N)` sheet bodies; at N=4, T=14-16 that is 4
+sheet bodies × ~150 tokens ≈ ~600 tokens of added context (≈ the observed
+input-token growth ceiling in the retention sessions: 1903 → 2449 across the
+session). Vs the 0.48% persisted-footprint baseline (roadmap §3) — within
+tolerance, below the Q5 stub-fallback trigger.
+
+Raw evidence: `test-lab/cache-probe-msr-{always,scheduled4,history4}-<runid>.jsonl` (committed).
+
+## Next gate (for Horst)
+
+The stop-signal branch "no improvement over copies ①/② alone" is **not yet
+decidable**: it needs a protocol that can actually drift (longer span,
+state-change schedule with a mid-session workpad update that the model must
+track, or a task where the goal is non-trivially recallable). Candidate:
+a 40-60 round single-invocation session with a workpad state change at round
+~N·2 whose old-vs-new distinction is probed after round ~3N. Until then,
+**step 8 (hard-delete of the transient machinery) is NOT cleared by this
+step's measurement** — the delivery gate (7a) passed; the benefit gate (7b)
+is inconclusive, not negative.
