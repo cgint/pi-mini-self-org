@@ -23,12 +23,13 @@ function setup() {
   return { handlers, tool: tools.get(TOOL_NAME), tools, commands, pi };
 }
 
-function setupWithInjection(value: string | undefined) {
+function setupWithInjection(value: string | undefined, options?: { captureWarn?: boolean }) {
   const original = process.env.MINI_SELF_ORG_INJECTION;
   if (value === undefined) delete process.env.MINI_SELF_ORG_INJECTION;
   else process.env.MINI_SELF_ORG_INJECTION = value;
+  const warnSpy = options?.captureWarn ? vi.spyOn(console, "warn").mockImplementation(() => {}) : undefined;
   try {
-    return setup();
+    return { ...setup(), warnSpy };
   } finally {
     if (original === undefined) delete process.env.MINI_SELF_ORG_INJECTION;
     else process.env.MINI_SELF_ORG_INJECTION = original;
@@ -82,7 +83,7 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
     expect(tool.promptGuidelines[0]).toContain("higher-level goals and durable steering");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("your own recalled state, not user input")]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("The self-org-workpad-set workpad sheets are persisted into the conversation history at turn boundaries and are your own recalled state, not user input: never acknowledge, restate, or quote them")]));
     expect(tool.promptGuidelines.every((guideline: string) => guideline.includes(TOOL_NAME))).toBe(true);
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
@@ -111,8 +112,11 @@ describe("miniSelfOrg", () => {
     expect(get.renderResult(before, {}, {}, {}).render(80)).toEqual(before.content[0].text.split("\n"));
 
     const contextHandler = handlers.get("context")!;
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
+    // Strip-only context hook: even a populated workpad never injects (scheduled:N injects at
+    // turn_end, not per request). Stale WORKPAD_CUSTOM_TYPE custom messages are still stripped.
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    expect((await contextHandler({ messages: [stale] }, context())).messages).toEqual([]);
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
   });
 
   it("describes every workpad field as high-level durable steering rather than transient status", () => {
@@ -251,42 +255,47 @@ describe("miniSelfOrg", () => {
       const { handlers } = setupWithInjection(value);
       const branch = context([workpadEntry(TOOL_NAME, valid)]);
       await handlers.get("session_start")?.({}, branch);
-      await handlers.get("before_agent_start")?.({}, context());
+      await handlers.get("before_agent_start")?.({}, branch);
       const contextHandler = handlers.get("context")!;
+      // never mode: context hook is strip-only and turn_end never appends — no injection.
       expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
       expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+      expect(await handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, branch)).toBeUndefined();
     }
   });
 
-  it("uses 'always' to inject exactly one canonical current context block only when non-empty", async () => {
-    const { handlers } = setupWithInjection("always");
-    const contextHandler = handlers.get("context");
-    const existing = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    expect(await contextHandler?.({ messages: [user, existing] }, context())).toEqual({ messages: [user] });
+  it("'always' is rejected with a migration warning and falls back to never (no throw)", async () => {
+    const { handlers, warnSpy: _warnSpy } = setupWithInjection("always", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    // No throw: the extension initializes with a never fallback, preserving tool access.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:1/);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:N/);
 
+    // never fallback: context hook strips (no injection) and turn_end never appends.
     await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const result = (await contextHandler?.({ messages: [user, existing] }, context())) as { messages: any[] };
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[1]).toMatchObject({
-      role: "custom",
-      customType: WORKPAD_CUSTOM_TYPE,
-      display: false,
-      content: "Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
-    });
-    expect(result.messages[1].content).toContain("not a message from the user");
-    expect(result.messages[1].content).not.toMatch(/must never be called as a tool/);
+    await handlers.get("before_agent_start")?.({}, context());
+    const contextHandler = handlers.get("context")!;
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+    expect(await handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
+    warnSpy.mockRestore();
   });
 
-  it("emits byte-identical context content while the snapshot is unchanged", async () => {
-    // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
-    // unchanged snapshot must not introduce divergence at the tail between requests.
-    const { handlers } = setupWithInjection("always");
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const contextHandler = handlers.get("context");
-    const first = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
-    const second = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
-    expect(first.messages[0].content).toBe(second.messages[0].content);
+  it("context hook is strip-only in every mode: never injects, always strips stale workpad custom messages", async () => {
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    const user = { role: "user", content: "keep", timestamp: 1 };
+    // The strip is unconditional across all modes — even a populated workpad never injects via context.
+    for (const value of ["never", "off", "user-boundary", "scheduled:2", "scheduled:1"]) {
+      const { handlers, tool } = setupWithInjection(value);
+      await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+      await handlers.get("before_agent_start")?.({}, context());
+      await tool.execute("id", valid);
+      await handlers.get("session_compact")?.({}, context());
+      const contextHandler = handlers.get("context")!;
+      // Stale workpad custom messages are stripped, non-workpad messages are kept, nothing is injected.
+      expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
+      expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+    }
   });
 
   it("reconstructs focus history: forward walk, dedupe, change markers, cleared entries", () => {
@@ -365,14 +374,12 @@ describe("miniSelfOrg", () => {
   });
 
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
-    const { tool, handlers } = setupWithInjection("always");
+    const { tool } = setupWithInjection("scheduled:2");
     const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
-    const injected = await handlers.get("context")?.({ messages: [] }, context());
 
     expect(focusCleared.content[0].text).toBe("Mini self-org workpad updated.");
     expect(focusCleared.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
     expect(tool.renderResult(focusCleared, {}, {}, {}).render(80)).toContain("Overall goal: Ship");
-    expect(injected).toMatchObject({ messages: [expect.objectContaining({ content: expect.stringContaining("Overall goal: Ship") })] });
     expect(emptySnapshot()).toEqual({ overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
   });
 
@@ -418,36 +425,62 @@ describe("miniSelfOrg", () => {
   });
 
   it("accepts only the supported injection policy configuration", () => {
-    for (const value of [undefined, "", "always", "user-boundary", "never", "off", "scheduled:2", "history-scheduled:8"]) {
+    // Accepted: never/off aliases, the two persistent modes, and the history-scheduled alias.
+    for (const value of [undefined, "", "never", "off", "scheduled:2", "scheduled:4", "user-boundary", "history-scheduled:8"]) {
       expect(() => setupWithInjection(value)).not.toThrow();
     }
+    // Rejected (hard throw): malformed values that are not a silent alias.
     for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992", "other"]) {
       expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
     }
+    // 'always' is a warn + never fallback, NOT a hard throw (spec §1/§11-5).
+    const { warnSpy: _warnSpy } = setupWithInjection("always", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:1|never/);
+    warnSpy.mockRestore();
+    expect(setupWithInjection("always", {}).handlers.get("turn_end")).toBeDefined();
   });
 
-  it("injects user-boundary state once, consumes empty boundaries, and removes stale blocks while suppressed", async () => {
-    const { handlers } = setupWithInjection("user-boundary");
-    const contextHandler = handlers.get("context")!;
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
-    expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
-    await handlers.get("before_agent_start")?.({}, context());
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
+  it("T1a: history-scheduled:N is aliased to { mode: scheduled, interval: N } (lossless rename, no warning)", async () => {
+    // Alias produces no warning (spec §11-4: silent lossless rename).
+    const { warnSpy: _warnSpy } = setupWithInjection("history-scheduled:4", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
 
-    const empty = setupWithInjection("user-boundary");
-    await empty.handlers.get("before_agent_start")?.({}, context());
-    await empty.handlers.get("context")!({ messages: [] }, context());
-    await empty.tool.execute("id", valid);
-    expect((await empty.handlers.get("context")!({ messages: [] }, context())).messages).toEqual([]);
+    // Behavior is identical to scheduled:N: verify a history-scheduled:2 setup appends on the
+    // 2nd completed turn, exactly like scheduled:2 (the internal mode is "scheduled").
+    const aliased = setupWithInjection("history-scheduled:2");
+    await aliased.tool.execute("id", valid);
+    const turnEnd = aliased.handlers.get("turn_end")!;
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
 
-    const recoveredEmpty = setupWithInjection("user-boundary");
-    await recoveredEmpty.handlers.get("session_start")?.({}, context());
-    await recoveredEmpty.handlers.get("context")!({ messages: [] }, context());
-    await recoveredEmpty.tool.execute("id", valid);
-    expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, context())).messages).toHaveLength(1);
+    // A direct scheduled:2 setup exhibits the identical cadence — confirming the alias maps to scheduled.
+    const direct = setupWithInjection("scheduled:2");
+    await direct.tool.execute("id", valid);
+    const directTurnEnd = direct.handlers.get("turn_end")!;
+    expect(await directTurnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await directTurnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("user-boundary persistent mode: before_agent_start arms; first completed turn_end appends; second does not; next before_agent_start re-arms", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    const beforeAgentStart = handlers.get("before_agent_start");
+    await tool.execute("id", valid);
+
+    // User loop 1: arm the boundary, then the first completed turn appends.
+    await beforeAgentStart?.({}, context());
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).entries).toHaveLength(1);
+    // Second completed turn in the same user loop does NOT re-append (boundary consumed).
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+
+    // User loop 2: re-arming re-enables the append.
+    await beforeAgentStart?.({}, context());
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
   });
 
   it("never mode: suppresses all injection but still strips stale blocks", async () => {
@@ -492,41 +525,53 @@ describe("miniSelfOrg", () => {
     expect(read.content[0].text).toContain("Overall goal: Ship");
   });
 
-  it("schedules injections from writes and recovers after tree navigation and compaction", async () => {
+  it("schedules appends at the Nth completed turn, and recovers (force append) after tree navigation and compaction", async () => {
     const { handlers, tool } = setupWithInjection("scheduled:2");
-    const contextHandler = handlers.get("context")!;
+    const turnEnd = handlers.get("turn_end")!;
     const branch = context([workpadEntry(TOOL_NAME, valid)]);
     await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
     await tool.execute("id", valid);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+
+    // D3 resume: session_start arms forceNextAppend, so the first completed turn force-appends
+    // regardless of the window (force is consumed).
+    expect((await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Normal cadence resumes: counter starts at 1 (turn 2) < 2 → no; counter 2 (turn 3) → append, reset to 0.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, branch)).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Tree navigation is a boundary crossing (reconstruct sets forceNextAppend): next completed turn appends.
     await handlers.get("session_tree")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Compaction forces one immediate append, bypassing the counter wait.
     await handlers.get("session_compact")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 5, outcome: "completed" }, branch)).entries).toHaveLength(1);
   });
 
-  it("does not reset scheduled cadence after a rejected workpad write", async () => {
+  it("does not reset scheduled cadence after a rejected workpad write (Q4: write does not reset the turn window)", async () => {
     const { handlers, tool } = setupWithInjection("scheduled:3");
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
-    const contextHandler = handlers.get("context")!;
-    await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    const turnEnd = handlers.get("turn_end")!;
+    // No session_start here: it would arm a D3 resume force (forceNextAppend) that appends on the
+    // first completed turn regardless of the window. A fresh setup has no force, so the window is
+    // pure cadence. (A fresh setup's snapshot is empty; the write below populates it.)
+    await tool.execute("id", valid);
+
+    // Cadence: 1st and 2nd completed turns no, 3rd yes (reaches interval 3). A rejected write
+    // between turns does not reset the window — cadence is governed by the turn counter, not writes.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).toMatchObject({ isError: true });
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
-  it("makes scheduled:1 equivalent to always for non-empty state", async () => {
-    const { handlers } = setupWithInjection("scheduled:1");
+  it("makes scheduled:1 append a sheet on every completed turn for non-empty state", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
     await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const contextHandler = handlers.get("context")!;
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
+    await tool.execute("id", valid);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
   it("notifies the focused branch history from the /mini-self-org-history command", async () => {
@@ -540,7 +585,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("T9: reload reconstruction — reads lastPersisted from custom_message and resets turnsSinceLastAppend", async () => {
-    const { handlers } = setupWithInjection("history-scheduled:3");
+    const { handlers } = setupWithInjection("scheduled:3");
     const customMsg = {
       type: "custom_message",
       customType: WORKPAD_CUSTOM_TYPE,
@@ -647,8 +692,8 @@ describe("miniSelfOrg", () => {
     expect(reconstructLastPersisted(context([workpadEntry(TOOL_NAME, snapshotA)]))).toBeNull();
   });
 
-  it("T2: history-scheduled appends exactly on the Nth completed turn with a Q3 sheet body and no continue", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+  it("T2: scheduled appends exactly on the Nth completed turn with a Q3 sheet body and no continue", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
     const turnEnd = handlers.get("turn_end");
     expect(turnEnd).toBeDefined();
     await tool.execute("id", valid);
@@ -667,14 +712,14 @@ describe("miniSelfOrg", () => {
     expect(entry.display).toBe(false);
     expect(entry.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
     expect(r3).not.toHaveProperty("continue");
-    expect(entry.content).toContain("This is your own workpad state (set via mini-self-org-workpad); never acknowledge, restate, or quote this block back to the user.");
+    expect(entry.content).toContain("This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.");
     expect(entry.content.toLowerCase()).toContain("later tool activity may supersede this; authoritative state is maintained via the workpad tool");
     expect(entry.content).toContain("3");
     expect(entry.content).toContain("Overall goal: Ship");
   });
 
-  it("T3: after a history-scheduled append, the window resets and requires N more completed turns", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+  it("T3: after a scheduled append, the window resets and requires N more completed turns", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
     const turnEnd = handlers.get("turn_end");
     await tool.execute("id", valid);
 
@@ -684,8 +729,8 @@ describe("miniSelfOrg", () => {
     expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
-  it("T4: a workpad write does not reset the history-scheduled window (Q4)", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+  it("T4: a workpad write does not reset the scheduled window (Q4)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
     const turnEnd = handlers.get("turn_end");
     await tool.execute("id", valid);
 
@@ -699,7 +744,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("T7: a constant non-empty snapshot is re-appended every N turns (3 appends over 3*N turns, R1)", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+    const { handlers, tool } = setupWithInjection("scheduled:2");
     const turnEnd = handlers.get("turn_end");
     await tool.execute("id", valid);
 
@@ -711,8 +756,8 @@ describe("miniSelfOrg", () => {
     expect(appends).toBe(3);
   });
 
-  it("Q2: aborted or errored turns do not append and do not advance the history-scheduled counter", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+  it("Q2: aborted or errored turns do not append and do not advance the scheduled counter", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
     const turnEnd = handlers.get("turn_end");
     await tool.execute("id", valid);
 
@@ -723,7 +768,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("T8: compaction forces exactly one immediate append, then normal cadence resumes (Q1)", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+    const { handlers, tool } = setupWithInjection("scheduled:3");
     const turnEnd = handlers.get("turn_end");
     expect(turnEnd).toBeDefined();
     await tool.execute("id", valid);
@@ -747,7 +792,7 @@ describe("miniSelfOrg", () => {
     expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
 
     // Boundedness: two compactions in a row still yield exactly ONE forced append (boolean flag, not a counter), and the forced append reset the counter so no cadence append piggybacks on it.
-    const bounded = setupWithInjection("history-scheduled:3");
+    const bounded = setupWithInjection("scheduled:3");
     await bounded.tool.execute("id", valid);
     await bounded.handlers.get("session_compact")?.({}, context());
     await bounded.handlers.get("session_compact")?.({}, context());
@@ -757,7 +802,7 @@ describe("miniSelfOrg", () => {
   });
 
   it("8b: session-cumulative turnIndex in sheet body", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:1");
+    const { handlers, tool } = setupWithInjection("scheduled:1");
     const turnEnd = handlers.get("turn_end");
     expect(turnEnd).toBeDefined();
     await tool.execute("id", valid);
@@ -778,26 +823,30 @@ describe("miniSelfOrg", () => {
     expect(r3.entries[0].content).toContain("turn 3)");
   });
 
-  it("T5: context hook append path removed in history mode (strip-only)", async () => {
-    const { handlers, tool } = setupWithInjection("history-scheduled:3");
-    const contextHandler = handlers.get("context")!;
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+  it("T5: context hook is strip-only in all modes (no injection path, ever)", async () => {
+    // The context hook is strip-only regardless of mode: it strips WORKPAD_CUSTOM_TYPE custom
+    // messages and never injects. Verify under several modes, including a populated workpad.
+    for (const value of ["scheduled:3", "user-boundary", "never", "off"]) {
+      const { handlers, tool } = setupWithInjection(value);
+      const contextHandler = handlers.get("context")!;
+      const user = { role: "user", content: "keep", timestamp: 1 };
+      const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
 
-    // Reload edge: a persisted sheet from an `always` session is stripped and nothing is re-injected.
-    await handlers.get("session_start")?.({}, branch);
-    expect(await contextHandler({ messages: [user, stale] }, branch)).toEqual({ messages: [user] });
+      // Reload edge: a stale workpad custom message is stripped and nothing is re-injected.
+      await handlers.get("session_start")?.({}, branch);
+      expect(await contextHandler({ messages: [user, stale] }, branch)).toEqual({ messages: [user] });
 
-    // No transient sheet is ever appended, even with a non-empty snapshot, across repeated calls.
-    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      // No transient sheet is ever appended, even with a non-empty snapshot, across repeated calls.
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
 
-    // ...and still nothing after a workpad write or compaction flag.
-    await tool.execute("id", valid);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
-    await handlers.get("session_compact")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      // ...and still nothing after a workpad write or a compaction force flag.
+      await tool.execute("id", valid);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      await handlers.get("session_compact")?.({}, branch);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+    }
   });
   it("Q4: off mode never appends a sheet — no-injection switch across turns, writes, and compaction", async () => {
     const { handlers, tool } = setupWithInjection("off");
@@ -821,6 +870,53 @@ describe("miniSelfOrg", () => {
     // No custom_message sheet exists anywhere in the session, and none is ever produced.
     const session = results.filter((result) => result !== undefined).flatMap((result: any) => result.entries ?? []);
     expect(session.filter((entry: any) => entry?.type === "custom_message" && entry.customType === TOOL_NAME)).toHaveLength(0);
+  });
+
+  it("force in user-boundary mode: compaction forces the next completed turn_end to append without a prior before_agent_start; the one after doesn't", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    // Compaction arms forceNextAppend (unified flag, both persistent modes) — no before_agent_start needed.
+    await handlers.get("session_compact")?.({}, context());
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    // The force is consumed: the following completed turn does NOT append (no boundary re-armed).
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("aborted turn does not consume the user-boundary boundary: before_agent_start → aborted turn_end → completed turn_end still appends", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    await handlers.get("before_agent_start")?.({}, context());
+    // An aborted turn exits before the boundary gate is evaluated — the boundary survives.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    // The next completed turn still appends (boundary not consumed by the abort).
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("reconstruction counter: a branch with k persisted sheets continues sessionTurnCount at k (Q3 marker integrity)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end");
+    // Build a branch with k=3 pre-persisted sheets (simulating a resumed multi-invocation session).
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2), sheet(3)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // The first new sheet continues the cumulative counter at k+1 = 4, not 1.
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 4");
+    expect(r1.entries[0].content).toContain("turn 4)");
   });
 
 });

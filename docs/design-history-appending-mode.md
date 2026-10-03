@@ -8,6 +8,22 @@ exactly-checkable location.** Version note (2026-10-03): the boundary-draft API
 implemented against **1.0.0** (devDependency `^1.0.0`, peer `>=0.87.0`). The original
 "0.85.1" verification target was stale — that version does not carry this API.
 
+> **Status note (2026-10-19) — full-replacement end-state executed; mode renamed.** The
+> end-state this document proposed (the persistent `turn_end` history-append as the *sole*
+> injection mechanism, transient `context`-hook injection retired) is now **executed**,
+> with one material change to the public grammar: the persistent mode label is renamed
+> from `history` to `scheduled`, and the env var value is renamed from `history-scheduled:<N>`
+> to `scheduled:<N>` (`history-scheduled:<N>` is kept as a **silent alias** — lossless rename,
+> no warning — so existing configurations keep working). The transient `context`-hook
+> **injection path has been hard-deleted** (`contextMessage()`, `forceNextInjection`,
+> `callsSinceLastInjectionOrWrite`, and the `context` hook's `if (shouldInject)` append block
+> are gone); the `context` hook is now **strip-only**. The internal `InjectionPolicy` is now
+> `{ mode: "never" } | { mode: "user-boundary" } | { mode: "scheduled"; interval: number }`.
+> `user-boundary` is the second persistent mode (append on the first completed turn after each
+> user-submitted agent loop). `always` is **rejected with a warning + `never` fallback** (not a
+> hard throw — it would kill the whole extension, including tools, on upgrade). See
+> `docs/spec-hard-delete-transient-injection.md` for the complete contract.
+
 Proposes replacing the transient tail-sheet injection mechanism with a persistent
 history-sheet mechanism: every N agent turns, the workpad snapshot is appended to the
 session transcript as a `custom_message` entry. The transient `context`-hook injection
