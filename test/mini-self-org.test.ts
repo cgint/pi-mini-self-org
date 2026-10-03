@@ -614,5 +614,28 @@ describe("miniSelfOrg", () => {
     await handlers.get("session_compact")?.({}, branch);
     expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
   });
+  it("Q4: off mode never appends a sheet — no-injection switch across turns, writes, and compaction", async () => {
+    const { handlers, tool } = setupWithInjection("off");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    await tool.execute("id", valid);
+
+    // Several turns, with workpad-set calls so the counter would advance if injection were active.
+    const results: any[] = [];
+    for (let turn = 1; turn <= 10; turn++) {
+      if (turn % 3 === 0) await tool.execute("id", { ...valid, currentFocus: `Focus ${turn}` });
+      results.push(await turnEnd?.({ type: "turn_end", turnIndex: turn, outcome: "completed" }, context()));
+    }
+    expect(results.every((result) => result === undefined)).toBe(true);
+
+    // The compaction force-append flag is also inert in off mode.
+    await handlers.get("session_compact")?.({}, context());
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 11, outcome: "completed" }, context())).toBeUndefined();
+
+    // No custom_message sheet exists anywhere in the session, and none is ever produced.
+    const session = results.filter((result) => result !== undefined).flatMap((result: any) => result.entries ?? []);
+    expect(session.filter((entry: any) => entry?.type === "custom_message" && entry.customType === TOOL_NAME)).toHaveLength(0);
+  });
 
 });
