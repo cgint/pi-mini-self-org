@@ -39,6 +39,13 @@ The model receives request-local current blocks framed as its own working scratc
 - `always` (the default when unset) — inject every model request while the workpad is non-empty.
 - `user-boundary` — inject only on the first model request for each user-submitted agent loop.
 - `scheduled:N` — inject every positive-safe-integer `N` model requests since the last injection or successful workpad write; `scheduled:1` is equivalent to `always` for a non-empty workpad.
+- `history-scheduled:N` — every `N` agent turns (a turn being a `turn_end` event with outcome `completed`), append the workpad snapshot to the session transcript as a persistent `custom_message` entry (customType `mini-self-org-workpad`, `display: false`). In this mode the transient tail-sheet injection is replaced by the `turn_end` append; the `context` hook only strips stale workpad custom messages and never injects.
+
+In `history-scheduled:N` the sheet reflects the snapshot as of the last append, so it can be up to `N` turns stale; a static workpad is re-appended every `N` turns, not sunk — the goal is recall and retention, not deduplication. A workpad write does not reset the `N`-turn window; cadence is governed by the turn counter, not by writes. After a `session_compact`, one forced sheet is appended at the next completed turn (at most one per compaction event). Aborted or errored turns are not counted; only `completed` turns advance the counter.
+
+> **Warning:** `history-scheduled:1` appends a sheet on every completed turn, equivalent in cadence to the legacy `always` mode, and is not recommended for long sessions (token bloat). This is a documented warning, not enforced in code — `N=1` is accepted.
+
+End state: until the transient mechanism is retired (design step 8, gated on retention measurement and secondmate sign-off), both mechanisms coexist — the `history-scheduled` transcript append here, and the transient tail-sheet in `always`, `user-boundary`, and `scheduled:N`. After step 8, `history-scheduled` becomes the only mode.
 
 Any other non-empty value is rejected during initialization. In `user-boundary` and `scheduled:N`, the first request after session start/resume, tree navigation, or successful compaction also injects. A successful workpad update or clear resets scheduled cadence. Empty workpads never inject, and stale transient blocks are removed on every request even when injection is suppressed. Autonomous tool loops therefore receive no repeated workpad block in `user-boundary`, and only receive it at their configured `scheduled:N` cadence.
 

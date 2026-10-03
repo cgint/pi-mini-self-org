@@ -275,6 +275,32 @@ describe("miniSelfOrg", () => {
     expect(reconstructHistory(context(entries), 15).entries[0].snapshot.overallGoal).toBe("Goal 5");
   });
 
+  it("T6: history-tool isolation — reconstructHistory identical with vs. without WORKPAD_CUSTOM_TYPE sheets (F11)", () => {
+    const A = { overallGoal: "Ship", currentFocus: "Plan", nextActions: ["a1"], blockers: [], notes: [] };
+    const B = { overallGoal: "Ship", currentFocus: "Execute", nextActions: ["b1"], blockers: [], notes: [] };
+    const A2 = { overallGoal: "Ship", currentFocus: "Resume", nextActions: [], blockers: [], notes: ["n"] };
+    const sheetGhost = { overallGoal: "Sheet ghost", currentFocus: "Ghost focus", nextActions: ["ghost"], blockers: [], notes: [] };
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: sheetGhost },
+    });
+
+    const branchWithoutSheets = [workpadEntry(TOOL_NAME, A), workpadEntry(TOOL_NAME, B), workpadEntry(TOOL_NAME, A2)];
+    const branchWithSheets = [sheet(1), ...branchWithoutSheets, sheet(2), sheet(3)];
+
+    const withoutSheets = reconstructHistory(context(branchWithoutSheets));
+    const withSheets = reconstructHistory(context(branchWithSheets));
+
+    expect(withSheets).toEqual(withoutSheets);
+    expect(withoutSheets.total).toBe(3);
+    expect(withoutSheets.entries).toHaveLength(3);
+    expect(JSON.stringify(withoutSheets)).not.toMatch(/Sheet ghost/);
+    expect(JSON.stringify(withSheets)).not.toMatch(/Sheet ghost/);
+  });
+
   it("returns an empty history without ids when the branch has no workpad results", () => {
     const history = reconstructHistory(context([{ type: "message", message: { role: "toolResult", toolName: "read", details: undefined } }]));
     expect(history).toEqual({ total: 0, entries: [] });
