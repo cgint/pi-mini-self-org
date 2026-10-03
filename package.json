@@ -30,7 +30,7 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.87.0",
     "@earendil-works/pi-tui": "^0.84.4",
     "@sinclair/typebox": "^0.34.52"
   },
@@ -41,7 +41,7 @@
     "precommit": "tsc --noEmit && npm run test && npm audit --audit-level=moderate"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
     "@earendil-works/pi-tui": "^0.84.4",
     "@sinclair/typebox": "^0.34.52",
     "@types/node": "^26.2.0",
