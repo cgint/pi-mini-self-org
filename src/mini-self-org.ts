@@ -408,10 +408,16 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     },
   });
   // Before each LLM call, remove stale transient blocks and conditionally inject the current one.
+  // In history mode the append path is not taken (shouldInject unconditionally false; the transient
+  // tail sheet does not exist, §4.3) — only the filter path (strip) remains, handling the reload
+  // edge (session started in `always`, resumed in `history-scheduled:N`).
   pi.on("context", async (event) => {
     const messages = event.messages.filter(
       (message) => message.role !== "custom" || message.customType !== WORKPAD_CUSTOM_TYPE,
     );
+    if (injectionPolicy.mode === "history") {
+      return { messages };
+    }
     const userBoundary = pendingUserBoundary;
     pendingUserBoundary = false;
     const snapshotHasContent = hasContent(snapshot);

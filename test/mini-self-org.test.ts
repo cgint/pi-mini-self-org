@@ -618,4 +618,26 @@ describe("miniSelfOrg", () => {
     expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
+  it("T5: context hook append path removed in history mode (strip-only)", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+    const contextHandler = handlers.get("context")!;
+    const user = { role: "user", content: "keep", timestamp: 1 };
+    const stale = { role: "custom", customType: TOOL_NAME, content: "old", display: false, timestamp: 1 };
+    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+
+    // Reload edge: a persisted sheet from an `always` session is stripped and nothing is re-injected.
+    await handlers.get("session_start")?.({}, branch);
+    expect(await contextHandler({ messages: [user, stale] }, branch)).toEqual({ messages: [user] });
+
+    // No transient sheet is ever appended, even with a non-empty snapshot, across repeated calls.
+    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+
+    // ...and still nothing after a workpad write or compaction flag.
+    await tool.execute("id", valid);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+    await handlers.get("session_compact")?.({}, branch);
+    expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+  });
+
 });
