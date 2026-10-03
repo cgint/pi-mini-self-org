@@ -618,6 +618,40 @@ describe("miniSelfOrg", () => {
     expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
+  it("T8: compaction forces exactly one immediate append, then normal cadence resumes (Q1)", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    // Forced append: the very next completed turn_end appends even though counter 1 < 3.
+    await handlers.get("session_compact")?.({}, context());
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const entry = r1.entries[0];
+    expect(entry.type).toBe("custom_message");
+    expect(entry.customType).toBe(TOOL_NAME);
+    expect(entry.display).toBe(false);
+    expect(entry.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+    expect(r1).not.toHaveProperty("continue");
+
+    // Flag cleared: counter is at 2 (< 3) after the forced append reset it, so turn 2 does not append.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+
+    // Normal cadence resumed: after the forced append (which reset the counter), a full window of N more turns elapses before the next append.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
+
+    // Boundedness: two compactions in a row still yield exactly ONE forced append (boolean flag, not a counter), and the forced append reset the counter so no cadence append piggybacks on it.
+    const bounded = setupWithInjection("history-scheduled:3");
+    await bounded.tool.execute("id", valid);
+    await bounded.handlers.get("session_compact")?.({}, context());
+    await bounded.handlers.get("session_compact")?.({}, context());
+    const forced = await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
   it("T5: context hook append path removed in history mode (strip-only)", async () => {
     const { handlers, tool } = setupWithInjection("history-scheduled:3");
     const contextHandler = handlers.get("context")!;

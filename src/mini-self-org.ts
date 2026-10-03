@@ -319,6 +319,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let forceNextInjection = false;
   let callsSinceLastInjectionOrWrite = 0;
   let turnsSinceLastAppend = 0;
+  let forceNextAppend = false;
   let lastPersisted: WorkpadSnapshot | null = null;
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
@@ -336,6 +337,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
   pi.on("session_compact", async () => {
     forceNextInjection = true;
+    if (injectionPolicy.mode === "history") forceNextAppend = true;
   });
   // Passive history append: every N completed turns, re-append the workpad state as a
   // custom_message entry (R1 recall). Re-appends regardless of change; no `continue` (D2).
@@ -343,7 +345,10 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     if (injectionPolicy.mode !== "history") return undefined;
     if (event.outcome !== "completed") return undefined;
     turnsSinceLastAppend += 1;
-    if (turnsSinceLastAppend < injectionPolicy.interval) return undefined;
+    // Compaction forces one immediate append, bypassing the counter wait (§4.4).
+    const forceAppend = forceNextAppend;
+    forceNextAppend = false;
+    if (!forceAppend && turnsSinceLastAppend < injectionPolicy.interval) return undefined;
     if (!hasContent(snapshot)) return undefined;
     lastPersisted = { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] };
     turnsSinceLastAppend = 0;
