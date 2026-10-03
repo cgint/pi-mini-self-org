@@ -2,6 +2,17 @@
 
 Date: 2026-10-19 · Status: **SPEC — secondmate reviewed (w2C:p2), 5 fixes adopted, ready for implementation**
 
+> **Post-implementation note (empty-workpad nudge extension):** the §5 code block is
+> partially superseded — scheduled mode now ticks `turnsSinceLastAppend` on EVERY
+> completed turn (including empty-workpad turns) and appends a nudge sheet at the
+> boundary when the pad is empty. The §5 prose note ("Empty-snapshot turns still
+> advance `turnsSinceLastAppend` … This is deliberate") was the intended behavior and
+> is now implemented; the §5 code block was the defect. `user-boundary` mode still
+> appends only when the pad has content. Also: in scheduled mode a forced append
+> with an empty pad is consumed by the nudge (the nudge serves the re-anchor role),
+> so the §5 "force survives until it can produce a sheet" note (Bug B) applies to
+> `user-boundary` mode only.
+
 > **Secondmate review (w2C:p2, 2026-10-19):** Verdict: solid spec, one internal
 > contradiction, one migration landmine, two text-staleness bugs. Approved after
 > five fixes, all adopted below: (a) §5/§11 contradiction resolved via unified

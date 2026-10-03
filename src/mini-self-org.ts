@@ -268,6 +268,15 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
   return snapshot.overallGoal !== null || snapshot.currentFocus !== null || snapshot.nextActions.length > 0 || snapshot.blockers.length > 0 || snapshot.notes.length > 0;
 }
 
+/** Renders the periodic empty-workpad nudge sheet (scheduled mode): reminds the agent to set steering state. Carries no snapshot payload. */
+function emptyNudgeBody(turnIndex: number): string {
+  return [
+    `Mini self-org workpad — checkpoint (turn ${turnIndex}): the workpad is empty.`,
+    "Periodic reminder: if this session has a sustained objective, set steering state via self-org-workpad-set (overallGoal, currentFocus, nextActions, blockers, notes). One-off requests can stay empty.",
+    "Do not acknowledge this reminder.",
+  ].join("\n");
+}
+
 /** Renders the passive history checkpoint sheet body (R2 self-ownership phrasing, Q3 verbatim lines). */
 function historySheetBody(snapshot: WorkpadSnapshot, turnIndex: number): string {
   return [
@@ -362,21 +371,44 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     // Q3 marker: increment unconditionally (all persistent modes), so every sheet
     // carries a turn index regardless of mode. Cost: nil.
     sessionTurnCount += 1;
-    if (!hasContent(snapshot)) return undefined;
-    // "Force survives until it can produce a sheet": hasContent check BEFORE force
-    // read/clear, so an empty workpad at compaction time does not lose the force.
 
     if (injectionPolicy.mode === "user-boundary") {
+      // "Force survives until it can produce a sheet": hasContent check BEFORE force
+      // read/clear, so an empty workpad does not lose the force.
+      if (!hasContent(snapshot)) return undefined;
       if (!pendingUserBoundary && !forceNextAppend) return undefined;
       pendingUserBoundary = false;
       forceNextAppend = false;
-    } else {
-      // mode === "scheduled"
-      turnsSinceLastAppend += 1;
-      const forceAppend = forceNextAppend;
-      forceNextAppend = false;
-      if (!forceAppend && turnsSinceLastAppend < injectionPolicy.interval) return undefined;
-      turnsSinceLastAppend = 0;
+      return {
+        entries: [{
+          type: "custom_message",
+          customType: WORKPAD_CUSTOM_TYPE,
+          content: historySheetBody(snapshot, sessionTurnCount),
+          display: false,
+          details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } },
+        }],
+      };
+    }
+
+    // mode === "scheduled": the window ticks on EVERY completed turn — including
+    // empty-workpad turns — so a later-populated pad appends on the normal cadence,
+    // and an empty pad gets a nudge sheet at the same boundary (LLM self-org nudge).
+    turnsSinceLastAppend += 1;
+    const forceAppend = forceNextAppend;
+    forceNextAppend = false;
+    if (!forceAppend && turnsSinceLastAppend < injectionPolicy.interval) return undefined;
+    turnsSinceLastAppend = 0;
+
+    if (!hasContent(snapshot)) {
+      return {
+        entries: [{
+          type: "custom_message",
+          customType: WORKPAD_CUSTOM_TYPE,
+          content: emptyNudgeBody(sessionTurnCount),
+          display: false,
+          details: {},
+        }],
+      };
     }
 
     return {

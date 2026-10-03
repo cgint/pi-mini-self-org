@@ -801,6 +801,68 @@ describe("miniSelfOrg", () => {
     expect(await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
   });
 
+  it("empty workpad: window ticks on every completed turn and appends a nudge sheet at the Nth turn (scheduled mode)", async () => {
+    const { handlers } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const nudge = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(nudge.entries).toHaveLength(1);
+    expect(nudge.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+    expect(nudge.entries[0].content).toContain("the workpad is empty");
+    expect(nudge.entries[0].content).toContain("self-org-workpad-set");
+    expect(nudge.entries[0].details).toEqual({});
+
+    // Window reset: no append on the next two turns, second nudge at the next boundary.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("empty workpad: counter advanced by empty turns is honored after the pad is populated (no double tick, full window required)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    const nudge = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(nudge.entries[0].content).toContain("the workpad is empty");
+
+    await tool.execute("id", valid);
+    // A full window of 3 completed turns is required before the first real sheet.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    const real = await turnEnd?.({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context());
+    expect(real.entries[0].details.snapshot.overallGoal).toBe("Ship");
+    expect(real.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("scheduled force + empty workpad: compaction force is consumed by an immediate nudge sheet", async () => {
+    const { handlers } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    // No pad set. Compaction arms forceNextAppend; the next completed turn must append a nudge.
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("the workpad is empty");
+    expect(forced.entries[0].details).toEqual({});
+
+    // Force consumed and window reset: no append on the next two turns.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("user-boundary mode never appends for an empty workpad (nudge is scheduled-only)", async () => {
+    const { handlers } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+
+    // before_agent_start arms the boundary; with an empty pad the completed turn must NOT append.
+    await handlers.get("before_agent_start")?.({}, context());
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+  });
+
   it("8b: session-cumulative turnIndex in sheet body", async () => {
     const { handlers, tool } = setupWithInjection("scheduled:1");
     const turnEnd = handlers.get("turn_end");

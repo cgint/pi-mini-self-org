@@ -24,6 +24,17 @@ implemented against **1.0.0** (devDependency `^1.0.0`, peer `>=0.87.0`). The ori
 > hard throw — it would kill the whole extension, including tools, on upgrade). See
 > `docs/spec-hard-delete-transient-injection.md` for the complete contract.
 
+> **Status note — empty-workpad nudge extension.** In `scheduled:<N>` mode the window
+> now ticks on **every** completed turn (including empty-workpad turns), and a boundary
+> with an empty pad appends a short **nudge sheet** ("the workpad is empty" +
+> self-org reminder via `self-org-workpad-set`, no snapshot payload, `details: {}`).
+> This resolves the silent-bootstrap gap (empty pad ⇒ no signal at all) and makes the
+> spec §5 prose note the implemented behavior. `user-boundary` mode is intentionally
+> unchanged: it appends only when the pad has content (a nudge on every user loop would
+> double the noise in exactly the mode that already appends most often).
+> Q3's adopted verbatim line ("later tool activity may supersede this; authoritative
+> state is maintained via the workpad tool") remains unchanged in the real sheet body.
+
 Proposes replacing the transient tail-sheet injection mechanism with a persistent
 history-sheet mechanism: every N agent turns, the workpad snapshot is appended to the
 session transcript as a `custom_message` entry. The transient `context`-hook injection
