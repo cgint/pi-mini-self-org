@@ -1,6 +1,15 @@
 # Workpad: cache handling vs. what the LLM perceives
 
-Decision map updated 2026-09-16. Default injection remains `always`; opt-in deterministic policies are implemented for measurement.
+Decision map updated 2026-09-16. **Superseded on 2026-09-17 (user decision):** the default
+injection policy is now `never` — the LLM accesses workpad state solely through the three tools
+(`self-org-workpad-set`, `self-org-workpad-get`, `self-org-workpad-history`). This supersedes the
+`HOLD DEFAULT: always` decision and the evidence-gate note in §0.1/§5 that deferred a default change
+pending cache and weak-model retention evidence. The historical narrative below is retained as the
+audit trail of that earlier decision; where it states `always` as the default, read it as
+pre-2026-09-17. `MINI_SELF_ORG_INJECTION` now accepts `never` (default), `always`, `user-boundary`,
+or `scheduled:N`.
+
+Original: Decision map updated 2026-09-16. Default injection remains `always`; opt-in deterministic policies are implemented for measurement.
 Narrative history and the audit trail of retracted claims live in
 `20260911_workpad-voice-and-frame_1_PLAN.md`; this file is the current map.
 

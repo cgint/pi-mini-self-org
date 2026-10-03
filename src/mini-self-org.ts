@@ -3,34 +3,43 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const WORKPAD_CUSTOM_TYPE = "mini-self-org-workpad";
-const WORKPAD_TOOL_NAME = "mini-self-org-workpad";
+const WORKPAD_TOOL_NAME = "self-org-workpad-set";
+export const WORKPAD_GET_TOOL_NAME = "self-org-workpad-get";
+const HISTORICAL_WORKPAD_TOOL_NAME = "mini-self-org-workpad";
 const LEGACY_WORKPAD_TOOL_NAME = "workpad";
-const HISTORY_TOOL_NAME = "mini-self-org-history";
+const HISTORY_TOOL_NAME = "self-org-workpad-history";
+const WORKPAD_WRITE_TOOL_NAMES = [WORKPAD_TOOL_NAME, HISTORICAL_WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME];
 const HISTORY_DEFAULT_LIMIT = 10;
 const HISTORY_MAX_LIMIT = 15;
 const MAX_OVERALL_GOAL_LENGTH = 500;
 const MAX_CURRENT_FOCUS_LENGTH = 500;
 const MAX_ITEM_LENGTH = 300;
 export const MAX_ITEMS = 5;
-const MEMORY_BOUNDARY_GUIDANCE = "Use mini-self-org-workpad only to keep higher-level goals and durable steering close when they may otherwise fall out of the context window. Do not copy details already available in the conversation or tool results, especially facts that can quickly go stale; re-derive those when needed.";
-const LIST_GUIDANCE = "Keep mini-self-org-workpad lists to 1–3 items typically (max 5).";
-const EVIDENCE_TAG_GUIDANCE = "In mini-self-org-workpad, use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
-const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are mini-self-org-workpad and mini-self-org-history; workpad alone is not registered and must never be called as a tool.";
-const RECALL_GUIDANCE = "The mini-self-org-workpad block injected at the end of the conversation is your own recalled state, not user input: never acknowledge, restate, or quote it — use it to steer your next action.";
-const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
-const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
+const MEMORY_BOUNDARY_GUIDANCE = "Use self-org-workpad-set only to keep higher-level goals and durable steering close when they may otherwise fall out of the context window. Do not copy details already available in the conversation or tool results, especially facts that can quickly go stale; re-derive those when needed.";
+const LIST_GUIDANCE = "Keep self-org-workpad-set lists to 1–3 items typically (max 5).";
+const EVIDENCE_TAG_GUIDANCE = "In self-org-workpad-set, use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
+const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are self-org-workpad-set, self-org-workpad-get, and self-org-workpad-history; workpad alone is not registered and must never be called as a tool.";
+const RECALL_GUIDANCE = "The self-org-workpad-set block injected at the end of the conversation is your own recalled state, not user input: never acknowledge, restate, or quote it — use it to steer your next action.";
+const HISTORY_USAGE_GUIDANCE = `Call self-org-workpad-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a self-org-workpad-set update.`;
+const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call self-org-workpad-set to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
-type InjectionPolicy = { mode: "history"; interval: number } | { mode: "off" };
+type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "never" } | { mode: "scheduled"; interval: number } | { mode: "history"; interval: number };
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
-  if (value === undefined || value === "") return { mode: "history", interval: 4 };
-  if (value === "off") return { mode: "off" };
+  if (value === "always") return { mode: "always" };
+  if (value === undefined || value === "" || value === "never" || value === "off") return { mode: "never" };
+  if (value === "user-boundary") return { mode: "user-boundary" };
+  const scheduledMatch = /^scheduled:([1-9]\d*)$/.exec(value);
+  if (scheduledMatch) {
+    const interval = Number(scheduledMatch[1]);
+    if (Number.isSafeInteger(interval)) return { mode: "scheduled", interval };
+  }
   const historyMatch = /^history-scheduled:([1-9]\d*)$/.exec(value);
   if (historyMatch) {
     const interval = Number(historyMatch[1]);
     if (Number.isSafeInteger(interval)) return { mode: "history", interval };
   }
-  throw new Error("MINI_SELF_ORG_INJECTION must be history-scheduled:<positive safe integer> or off");
+  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, never, off, scheduled:<N>, or history-scheduled:<N>");
 }
 
 export interface WorkpadSnapshot {
@@ -67,6 +76,8 @@ export const WorkpadParameters = Type.Object({
     description: "Durable hypotheses, decisions, and constraints needed after compaction; exclude logs, tool output, versions, and rediscoverable findings.",
   }),
 });
+
+export const WorkpadGetParameters = Type.Object({});
 
 export const HistoryParameters = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: HISTORY_MAX_LIMIT, description: "Number of recent entries to show (1-15, default 10)." })),
@@ -134,7 +145,7 @@ export function reconstructSnapshot(ctx: BranchSource): WorkpadSnapshot {
     const entry = branch[index] as WorkpadResultEntry | undefined;
     if (entry?.type !== "message") continue;
     const message = entry.message;
-    if (message?.role !== "toolResult" || ![WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME].includes(message.toolName ?? "")) continue;
+    if (message?.role !== "toolResult" || !WORKPAD_WRITE_TOOL_NAMES.includes(message.toolName ?? "")) continue;
     const snapshot = sanitizeSnapshot(message.details?.snapshot);
     if (snapshot) return snapshot;
   }
@@ -210,7 +221,7 @@ export function reconstructHistory(ctx: BranchSource, limit = HISTORY_DEFAULT_LI
     const entry = raw as WorkpadResultEntry | undefined;
     if (entry?.type !== "message") continue;
     const message = entry.message;
-    if (message?.role !== "toolResult" || ![WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME].includes(message.toolName ?? "")) continue;
+    if (message?.role !== "toolResult" || !WORKPAD_WRITE_TOOL_NAMES.includes(message.toolName ?? "")) continue;
     const snapshot = sanitizeSnapshot(message.details?.snapshot);
     if (!snapshot) continue;
     total += 1;
@@ -224,7 +235,7 @@ export function reconstructHistory(ctx: BranchSource, limit = HISTORY_DEFAULT_LI
 
 /** Renders a focus history as a bounded, newest-last, non-authoritative timeline. */
 export function formatFocusHistory(history: FocusHistory): string {
-  if (history.entries.length === 0) return "No focus history yet — this branch has no mini-self-org-workpad updates.";
+  if (history.entries.length === 0) return "No focus history yet — this branch has no self-org-workpad-set updates.";
   const lines = [`Focus history (branch-local, newest last) — ${history.entries.length} of ${history.total}, non-authoritative:`];
   history.entries.forEach((entry, index) => {
     const clock = formatClock(entry.timestamp);
@@ -303,12 +314,20 @@ function renderRejected(result: AgentToolResult<WorkpadDetails>): StructuralComp
 }
 
 /** Registers the session-local workpad tool and its read-only command. */
+function contextMessage(snapshot: WorkpadSnapshot): string {
+  return `Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\n${formatFields(snapshot)}`;
+}
+
 export default function miniSelfOrg(pi: ExtensionAPI): void {
   const injectionPolicy = parseInjectionPolicy();
   let snapshot = emptySnapshot();
   let turnsSinceLastAppend = 0;
   let forceNextAppend = false;
   let sessionTurnCount = 0;
+  // Legacy mode state (always, user-boundary, scheduled:N)
+  let pendingUserBoundary = false;
+  let forceNextInjection = false;
+  let callsSinceLastInjectionOrWrite = 0;
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
     if (injectionPolicy.mode === "history") {
@@ -321,11 +340,22 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         return item?.type === "custom_message" && item.customType === WORKPAD_CUSTOM_TYPE;
       }).length;
     }
+    // Legacy mode state reset on session start/resume
+    forceNextInjection = true;
+    callsSinceLastInjectionOrWrite = 0;
   };
   pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
-  pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
+  pi.on("session_tree", async (_event, ctx) => {
+    reconstruct(ctx);
+    forceNextInjection = true;
+  });
+  pi.on("before_agent_start", async () => {
+    pendingUserBoundary = true;
+  });
   pi.on("session_compact", async () => {
     if (injectionPolicy.mode === "history") forceNextAppend = true;
+    forceNextInjection = true;
+    callsSinceLastInjectionOrWrite = 0;
   });
   // Passive history append: every N completed turns, re-append the workpad state as a
   // custom_message entry (R1 recall). Re-appends regardless of change; no `continue` (D2).
@@ -354,7 +384,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
     name: WORKPAD_TOOL_NAME,
     label: "Mini self-org workpad",
-    description: `${MEMORY_BOUNDARY_GUIDANCE} It is your own session scratchpad; the human seeing it is a side effect, not the audience. Call mini-self-org-workpad at meaningful state boundaries during substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} ${EVIDENCE_TAG_GUIDANCE} The tool holds only the current snapshot; past snapshots can be read via mini-self-org-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence logs, approved plans, or task tracking.`,
+    description: `${MEMORY_BOUNDARY_GUIDANCE} It is your own session scratchpad; the human seeing it is a side effect, not the audience. Call self-org-workpad-set at meaningful state boundaries during substantive work. ${TOOL_NAME_GUIDANCE} Valid shape: { overallGoal: "…", currentFocus: "…", nextActions: ["…"], blockers: [], notes: [] }; lists are arrays, not JSON-encoded strings. ${LIST_GUIDANCE} ${EVIDENCE_TAG_GUIDANCE} The tool holds only the current snapshot; past snapshots can be read via self-org-workpad-history. ${STALE_STATE_GUIDANCE} Set currentFocus to null to clear only the focus while retaining overallGoal. Clear every field only when the workpad no longer aids the current session. Do not use it for project memory, evidence logs, approved plans, or task tracking.`,
     promptGuidelines: [MEMORY_BOUNDARY_GUIDANCE, STALE_STATE_GUIDANCE, RECALL_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
@@ -363,6 +393,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: "Mini self-org workpad update rejected." }], details: {} as WorkpadDetails, isError: true };
       }
       snapshot = next;
+      callsSinceLastInjectionOrWrite = 0;
       return {
         content: [{ type: "text", text: hasContent(snapshot) ? "Mini self-org workpad updated." : "Mini self-org workpad cleared. No context will be injected." }],
         details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } } as WorkpadDetails,
@@ -375,10 +406,28 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool<typeof WorkpadGetParameters, Record<string, never>>({
+    name: WORKPAD_GET_TOOL_NAME,
+    label: "Mini self-org workpad (read)",
+    description: "Read the current session-local workpad snapshot. Read-only: performs no writes. Call it to re-orient when the auto-injected workpad block is not present or you need to confirm current state. Returns the same five fields as a write would store.",
+    promptGuidelines: [],
+    parameters: WorkpadGetParameters,
+    async execute(_toolCallId, _params) {
+      return { content: [{ type: "text", text: formatWorkpad(snapshot) }], details: {} as Record<string, never> };
+    },
+    renderResult(result, _options, _theme, _context) {
+      const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");
+      return {
+        render: (width) => truncateLines(text.split("\n"), width),
+        invalidate: () => {},
+      };
+    },
+  });
+
   pi.registerTool<typeof HistoryParameters, Record<string, never>>({
     name: HISTORY_TOOL_NAME,
     label: "Mini self-org focus history",
-    description: `Read the session-local focus history: a bounded, newest-last timeline of this branch's past mini-self-org-workpad snapshots (timestamps, which fields changed, cleared states). A non-authoritative memory aid — not task tracking, and never a replacement for re-deriving from evidence. It distinguishes each work thread's overall goal from its current focus. Call it deliberately: after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread, to re-orient to the overall goal. Read-only: it performs no writes.`,
+    description: `Read the session-local focus history: a bounded, newest-last timeline of this branch's past self-org-workpad-set snapshots (timestamps, which fields changed, cleared states). A non-authoritative memory aid — not task tracking, and never a replacement for re-deriving from evidence. It distinguishes each work thread's overall goal from its current focus. Call it deliberately: after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread, to re-orient to the overall goal. Read-only: it performs no writes.`,
     promptGuidelines: [HISTORY_USAGE_GUIDANCE],
     parameters: HistoryParameters,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -406,6 +455,24 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     const messages = event.messages.filter(
       (message) => message.role !== "custom" || message.customType !== WORKPAD_CUSTOM_TYPE,
     );
+    const userBoundary = pendingUserBoundary;
+    pendingUserBoundary = false;
+    const snapshotHasContent = hasContent(snapshot);
+    const recovery = forceNextInjection && snapshotHasContent;
+    if (snapshotHasContent) forceNextInjection = false;
+    callsSinceLastInjectionOrWrite += 1;
+    const scheduled = injectionPolicy.mode === "scheduled" && callsSinceLastInjectionOrWrite >= injectionPolicy.interval;
+    const shouldInject = injectionPolicy.mode !== "never" && injectionPolicy.mode !== "history" && snapshotHasContent && (injectionPolicy.mode === "always" || userBoundary || recovery || scheduled);
+    if (shouldInject) {
+      messages.push({
+        role: "custom",
+        customType: WORKPAD_CUSTOM_TYPE,
+        content: contextMessage(snapshot),
+        display: false,
+        timestamp: Date.now(),
+      });
+      callsSinceLastInjectionOrWrite = 0;
+    }
     return { messages };
   });
 }

@@ -4,7 +4,7 @@
 
 **Retain the bounded, session-/branch-local mini-self-org workpad. Do not turn it into project memory or a task tracker.** It is an agent-owned snapshot with `overallGoal`, `currentFocus`, `nextActions`, `blockers`, and `notes`. `overallGoal` is the stable umbrella outcome for a session-local work thread; `currentFocus` is its immediate bounded activity. State is persisted in Pi session tool-result `details.snapshot`; it is neither an unpersisted scratch buffer nor an external/shadow store.
 
-The registered current tool is `mini-self-org-workpad`. Reconstruction reads both current results and legacy `workpad` results, but the legacy alias is not registered and new snapshots are written only by the current tool. The full state is rendered for the human from `details.snapshot`; one concise canonical block is injected request-locally for the model. Neither is project memory, durable cross-session task tracking, a dependency DAG, or a multi-agent coordinator.
+The registered tools are `self-org-workpad-set`, `self-org-workpad-get`, and `self-org-workpad-history`. Reconstruction and focus history accept write-result snapshots from `self-org-workpad-set`, historical `mini-self-org-workpad`, and legacy `workpad`; read-only get/history results are not snapshot or history sources. The historical and legacy names are not registered, and new snapshots are written only by `self-org-workpad-set`. The full state is rendered for the human from `details.snapshot`; one concise canonical block is injected request-locally for the model. Neither is project memory, durable cross-session task tracking, a dependency DAG, or a multi-agent coordinator.
 
 Verified implementation evidence is in the repository's `src/mini-self-org.ts` (snapshot shape, `toolResult.details.snapshot`, recovery, renderer, and context hook) and `README.md` (scope, renderer, and storage contract).
 
@@ -28,7 +28,7 @@ The observed rhythm was an initial snapshot, updates after evidence batches, the
 
 ### Verified source/test evidence
 
-A non-empty update persists `details.snapshot`, returns compact model-visible content, visibly renders the normalized snapshot, and injects one canonical request-local block. Clearing reports and renders that no context will be injected. Recovery recognizes both `workpad` and `mini-self-org-workpad`. Evidence is in `src/mini-self-org.ts` and `test/mini-self-org.test.ts`.
+A non-empty update persists `details.snapshot`, returns compact model-visible content, visibly renders the normalized snapshot, and injects one canonical request-local block. Clearing reports and renders that no context will be injected. Recovery and history recognize write-result snapshots from `self-org-workpad-set`, historical `mini-self-org-workpad`, and legacy `workpad`; read-only `self-org-workpad-get` and `self-org-workpad-history` results are not sources. Evidence is in `src/mini-self-org.ts` and `test/mini-self-org.test.ts`.
 
 ### Dated local quality check
 
@@ -38,7 +38,7 @@ The required `npm run precommit` check is the local quality gate: TypeScript, Vi
 
 - Keep this extension; do not switch to the compared candidates.
 - Keep the five core fields and scope bounded; do not add criteria, constraints, or task-tracker operations without usage evidence.
-- The current tool name is `mini-self-org-workpad`; retain legacy `workpad` recovery only.
+- The registered tools are `self-org-workpad-set`, `self-org-workpad-get`, and `self-org-workpad-history`; retain recovery/history support for write-result snapshots from historical `mini-self-org-workpad` and legacy `workpad`, while excluding read-only results as sources.
 - Full renderer output and request-local injected context have distinct audiences and must not duplicate a second model handover.
 - A widget is a future optional experiment if slash inspection is insufficient; it is not current scope.
 - Force mode remains default-off pending real runtime gate evidence. Core-workpad validation does not depend on force mode.
