@@ -20,17 +20,22 @@ const RECALL_GUIDANCE = "The mini-self-org-workpad block injected at the end of 
 const HISTORY_USAGE_GUIDANCE = `Call mini-self-org-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a mini-self-org-workpad update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call mini-self-org-workpad to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
-type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "scheduled"; interval: number };
+type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "scheduled"; interval: number } | { mode: "history"; interval: number };
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
   if (value === undefined || value === "" || value === "always") return { mode: "always" };
   if (value === "user-boundary") return { mode: "user-boundary" };
-  const match = /^scheduled:([1-9]\d*)$/.exec(value);
-  if (match) {
-    const interval = Number(match[1]);
+  const scheduledMatch = /^scheduled:([1-9]\d*)$/.exec(value);
+  if (scheduledMatch) {
+    const interval = Number(scheduledMatch[1]);
     if (Number.isSafeInteger(interval)) return { mode: "scheduled", interval };
   }
-  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, or scheduled:<positive safe integer>");
+  const historyMatch = /^history-scheduled:([1-9]\d*)$/.exec(value);
+  if (historyMatch) {
+    const interval = Number(historyMatch[1]);
+    if (Number.isSafeInteger(interval)) return { mode: "history", interval };
+  }
+  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, scheduled:<positive safe integer>, or history-scheduled:<positive safe integer>");
 }
 
 export interface WorkpadSnapshot {
@@ -141,6 +146,7 @@ export function reconstructSnapshot(ctx: BranchSource): WorkpadSnapshot {
   return emptySnapshot();
 }
 
+
 export type WorkpadField = keyof WorkpadSnapshot;
 
 export interface FocusHistoryEntry {
@@ -179,6 +185,28 @@ function formatClock(timestamp: number): string {
 }
 
 /** Reconstructs the branch's focus history: sanitized workpad snapshots in branch order, consecutive duplicates merged, capped to the newest `limit` entries. */
+interface CustomMessageEntry {
+  type?: string;
+  customType?: string;
+  details?: { snapshot?: unknown };
+}
+
+/**
+ * Reads the branch for the newest WORKPAD_CUSTOM_TYPE custom_message entry
+ * and returns its details.snapshot, or null if none exists.
+ * Used for reconstruction on reload/branch-switch (§4.5).
+ */
+export function reconstructLastPersisted(ctx: BranchSource): WorkpadSnapshot | null {
+  const branch = ctx.sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index] as CustomMessageEntry | undefined;
+    if (entry?.type !== "custom_message" || entry.customType !== WORKPAD_CUSTOM_TYPE) continue;
+    const snapshot = sanitizeSnapshot(entry.details?.snapshot);
+    if (snapshot) return snapshot;
+  }
+  return null;
+}
+
 export function reconstructHistory(ctx: BranchSource, limit = HISTORY_DEFAULT_LIMIT): FocusHistory {
   const branch = ctx.sessionManager.getBranch();
   let total = 0;
@@ -232,6 +260,17 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
   return snapshot.overallGoal !== null || snapshot.currentFocus !== null || snapshot.nextActions.length > 0 || snapshot.blockers.length > 0 || snapshot.notes.length > 0;
 }
 
+/** Renders the passive history checkpoint sheet body (R2 self-ownership phrasing, Q3 verbatim lines). */
+function historySheetBody(snapshot: WorkpadSnapshot, turnIndex: number): string {
+  return [
+    `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+    "This is your own workpad state (set via mini-self-org-workpad); never acknowledge, restate, or quote this block back to the user.",
+    `Turn index: ${turnIndex}`,
+    "Later tool activity may supersede this; authoritative state is maintained via the workpad tool.",
+    formatFields(snapshot),
+  ].join("\n");
+}
+
 function contextMessage(snapshot: WorkpadSnapshot): string {
   return `Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\n${formatFields(snapshot)}`;
 }
@@ -279,8 +318,14 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let pendingUserBoundary = false;
   let forceNextInjection = false;
   let callsSinceLastInjectionOrWrite = 0;
+  let turnsSinceLastAppend = 0;
+  let lastPersisted: WorkpadSnapshot | null = null;
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
+    if (injectionPolicy.mode === "history") {
+      lastPersisted = reconstructLastPersisted(ctx);
+      turnsSinceLastAppend = 0;
+    }
     forceNextInjection = true;
     callsSinceLastInjectionOrWrite = 0;
   };
@@ -291,6 +336,26 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
   pi.on("session_compact", async () => {
     forceNextInjection = true;
+  });
+  // Passive history append: every N completed turns, re-append the workpad state as a
+  // custom_message entry (R1 recall). Re-appends regardless of change; no `continue` (D2).
+  pi.on("turn_end", (event) => {
+    if (injectionPolicy.mode !== "history") return undefined;
+    if (event.outcome !== "completed") return undefined;
+    turnsSinceLastAppend += 1;
+    if (turnsSinceLastAppend < injectionPolicy.interval) return undefined;
+    if (!hasContent(snapshot)) return undefined;
+    lastPersisted = { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] };
+    turnsSinceLastAppend = 0;
+    return {
+      entries: [{
+        type: "custom_message",
+        customType: WORKPAD_CUSTOM_TYPE,
+        content: historySheetBody(snapshot, event.turnIndex),
+        display: false,
+        details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } },
+      }],
+    };
   });
 
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({

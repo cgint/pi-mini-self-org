@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory, reconstructSnapshot, sanitizeSnapshot, WorkpadParameters } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, sanitizeSnapshot, WorkpadParameters } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "mini-self-org-workpad";
 type Handler = (event: any, ctx: any) => Promise<any>;
@@ -355,6 +355,15 @@ describe("miniSelfOrg", () => {
     }
   });
 
+  it("accepts the history-scheduled injection policy", () => {
+    for (const value of ["history-scheduled:8", "always", "user-boundary", "scheduled:4"]) {
+      expect(() => setupWithInjection(value)).not.toThrow();
+    }
+    for (const value of ["history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992"]) {
+      expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
+    }
+  });
+
   it("injects user-boundary state once, consumes empty boundaries, and removes stale blocks while suppressed", async () => {
     const { handlers } = setupWithInjection("user-boundary");
     const contextHandler = handlers.get("context")!;
@@ -424,6 +433,189 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[0][0]).toContain("Command goal");
     expect(notify.mock.calls[0][0]).toContain("non-authoritative");
     expect(notify.mock.calls[0][1]).toBe("info");
+  });
+
+  it("T9: reload reconstruction — reads lastPersisted from custom_message and resets turnsSinceLastAppend", async () => {
+    const { handlers } = setupWithInjection("history-scheduled:3");
+    const customMsg = {
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: "sheet body",
+      details: { snapshot: valid },
+      display: false,
+      id: "cm1",
+      parentId: "msg1",
+      timestamp: 1,
+    };
+    // Branch with both a toolResult (copy ②) and a custom_message sheet
+    const branch = context([workpadEntry(TOOL_NAME, valid), customMsg]);
+    await handlers.get("session_start")?.({}, branch);
+
+    // reconstructLastPersisted returns the sanitized snapshot from the custom_message
+    expect(reconstructLastPersisted(branch)).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Test focus",
+      nextActions: ["Test"],
+      blockers: [],
+      notes: ["Keep small"],
+    });
+
+    // Branch with only toolResult entries (no custom_message) → null
+    const toolOnly = context([workpadEntry(TOOL_NAME, valid)]);
+    expect(reconstructLastPersisted(toolOnly)).toBeNull();
+
+    // Branch with multiple custom_message entries → returns the NEWEST one
+    const older = {
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: "older",
+      details: { snapshot: { overallGoal: "Old goal", currentFocus: "Old focus", nextActions: [], blockers: [], notes: [] } },
+      display: false,
+      id: "cm-old",
+      parentId: "msg0",
+      timestamp: 0,
+    };
+    const newer = {
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: "newer",
+      details: { snapshot: { overallGoal: "New goal", currentFocus: "New focus", nextActions: ["do it"], blockers: [], notes: [] } },
+      display: false,
+      id: "cm-new",
+      parentId: "msg1",
+      timestamp: 2,
+    };
+    const multiBranch = context([older, newer]);
+    expect(reconstructLastPersisted(multiBranch)).toEqual({
+      overallGoal: "New goal",
+      currentFocus: "New focus",
+      nextActions: ["do it"],
+      blockers: [],
+      notes: [],
+    });
+  });
+
+  it("T10: post-compaction reconstruction edge — newest sheet or null", () => {
+    const snapshotA = { overallGoal: "Ship", currentFocus: "Plan", nextActions: ["a1"], blockers: [], notes: [] };
+    const snapshotB = { overallGoal: "Ship", currentFocus: "Execute", nextActions: ["b1"], blockers: [], notes: [] };
+
+    const entryA: any = {
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: "sheet A",
+      details: { snapshot: snapshotA },
+      display: false,
+      id: "cmA",
+      parentId: "msgA",
+      timestamp: 1,
+    };
+    const entryB: any = {
+      type: "custom_message",
+      customType: TOOL_NAME,
+      content: "sheet B",
+      details: { snapshot: snapshotB },
+      display: false,
+      id: "cmB",
+      parentId: "msgB",
+      timestamp: 2,
+    };
+
+    // Both present: returns the newest (B)
+    expect(reconstructLastPersisted(context([entryA, entryB]))).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Execute",
+      nextActions: ["b1"],
+      blockers: [],
+      notes: [],
+    });
+
+    // B was summarized away: only A remains
+    expect(reconstructLastPersisted(context([entryA]))).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Plan",
+      nextActions: ["a1"],
+      blockers: [],
+      notes: [],
+    });
+
+    // No custom_message entries at all → null
+    expect(reconstructLastPersisted(context([]))).toBeNull();
+    expect(reconstructLastPersisted(context([workpadEntry(TOOL_NAME, snapshotA)]))).toBeNull();
+  });
+
+  it("T2: history-scheduled appends exactly on the Nth completed turn with a Q3 sheet body and no continue", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const r2 = await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    for (const r of [r1, r2]) {
+      expect(r === undefined || r?.entries === undefined || r?.entries?.length === 0).toBe(true);
+    }
+
+    const r3 = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    const entry = r3.entries[0];
+    expect(entry.type).toBe("custom_message");
+    expect(entry.customType).toBe(TOOL_NAME);
+    expect(entry.display).toBe(false);
+    expect(entry.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+    expect(r3).not.toHaveProperty("continue");
+    expect(entry.content).toContain("This is your own workpad state (set via mini-self-org-workpad); never acknowledge, restate, or quote this block back to the user.");
+    expect(entry.content.toLowerCase()).toContain("later tool activity may supersede this; authoritative state is maintained via the workpad tool");
+    expect(entry.content).toContain("3");
+    expect(entry.content).toContain("Overall goal: Ship");
+  });
+
+  it("T3: after a history-scheduled append, the window resets and requires N more completed turns", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("T4: a workpad write does not reset the history-scheduled window (Q4)", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    const updated = await tool.execute("id", { ...valid, currentFocus: "Mid-window focus" });
+    expect(updated.isError).toBeUndefined();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const appended = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(appended.entries).toHaveLength(1);
+    expect(appended.entries[0].details.snapshot.currentFocus).toBe("Mid-window focus");
+  });
+
+  it("T7: a constant non-empty snapshot is re-appended every N turns (3 appends over 3*N turns, R1)", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    let appends = 0;
+    for (let turn = 1; turn <= 6; turn++) {
+      const result = await turnEnd?.({ type: "turn_end", turnIndex: turn, outcome: "completed" }, context());
+      if (result?.entries?.length > 0) appends++;
+    }
+    expect(appends).toBe(3);
+  });
+
+  it("Q2: aborted or errored turns do not append and do not advance the history-scheduled counter", async () => {
+    const { handlers, tool } = setupWithInjection("history-scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "error" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
 });
