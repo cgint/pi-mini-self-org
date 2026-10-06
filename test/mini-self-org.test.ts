@@ -152,7 +152,7 @@ describe("miniSelfOrg", () => {
       "- Keep small",
     ]);
 
-    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
+    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] });
     expect(rejected.isError).toBe(true);
     const jsonEncodedLists = await tool.execute("id", { ...valid, nextActions: '["Test"]', blockers: "[]", notes: "[]" });
     expect(jsonEncodedLists.isError).toBe(true);
@@ -163,12 +163,12 @@ describe("miniSelfOrg", () => {
 
   it("renders self-rejected workpad updates as rejected", async () => {
     const { tool } = setup();
-    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
+    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] });
 
     expect(rejected.isError).toBe(true);
     expect(tool.renderResult(rejected, {}, {}, { isError: true }).render(80)).toEqual([
       "Rejected — workpad unchanged (previous state still active).",
-      "Mini self-org workpad update rejected.",
+      "Mini self-org workpad update rejected: blockers has 4 items; max is 3.",
     ]);
   });
 
@@ -517,7 +517,7 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // A rejected write does not trigger injection either:
-    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
+    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] })).isError).toBe(true);
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // Compaction does not trigger injection:
@@ -565,7 +565,7 @@ describe("miniSelfOrg", () => {
     // Cadence: 1st and 2nd completed turns no, 3rd yes (reaches interval 3). A rejected write
     // between turns does not reset the window — cadence is governed by the turn counter, not writes.
     expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
-    expect(await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).toMatchObject({ isError: true });
+    expect(await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] })).toMatchObject({ isError: true });
     expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
     expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
@@ -1476,5 +1476,79 @@ describe("miniSelfOrg", () => {
     const user = { role: "user", content: "keep", timestamp: 1 };
     expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
     expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+  });
+
+  it("accepts items up to 500 characters and rejects items exceeding 500 characters with diagnostic error", async () => {
+    const { tool } = setup();
+    const str500 = "a".repeat(500);
+    const str501 = "a".repeat(501);
+
+    const okResult = await tool.execute("id", { ...valid, notes: [str500], nextActions: [str500], blockers: [str500] });
+    expect(okResult.isError).toBeUndefined();
+    expect(okResult.details.snapshot?.notes[0]).toBe(str500);
+
+    const rejected = await tool.execute("id", { ...valid, notes: [str501] });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0].text).toBe("Mini self-org workpad update rejected: notes[0] exceeds maximum length of 500 characters (501 chars received).");
+  });
+
+  it("accepts up to 3 blockers and rejects 4 blockers with diagnostic error", async () => {
+    const { tool } = setup();
+    const threeBlockers = await tool.execute("id", { ...valid, blockers: ["b1", "b2", "b3"] });
+    expect(threeBlockers.isError).toBeUndefined();
+    expect(threeBlockers.details.snapshot?.blockers).toEqual(["b1", "b2", "b3"]);
+
+    const fourBlockers = await tool.execute("id", { ...valid, blockers: ["b1", "b2", "b3", "b4"] });
+    expect(fourBlockers.isError).toBe(true);
+    expect(fourBlockers.content[0].text).toBe("Mini self-org workpad update rejected: blockers has 4 items; max is 3.");
+  });
+
+  it("coerces empty string or whitespace-only overallGoal and currentFocus to null", async () => {
+    const { tool } = setup();
+    const coerced = await tool.execute("id", { ...valid, overallGoal: "", currentFocus: "   " });
+    expect(coerced.isError).toBeUndefined();
+    expect(coerced.details.snapshot?.overallGoal).toBeNull();
+    expect(coerced.details.snapshot?.currentFocus).toBeNull();
+  });
+
+  it("provides exact diagnostic error when list is not an array, and filters out blank list items gracefully", async () => {
+    const { tool } = setup();
+    const notArray = await tool.execute("id", { ...valid, notes: "not an array" });
+    expect(notArray.isError).toBe(true);
+    expect(notArray.content[0].text).toBe("Mini self-org workpad update rejected: notes must be an array of strings, not string.");
+
+    const filteredEmpty = await tool.execute("id", { ...valid, notes: ["Keep small", "   ", ""] });
+    expect(filteredEmpty.isError).toBeUndefined();
+    expect(filteredEmpty.details.snapshot?.notes).toEqual(["Keep small"]);
+  });
+
+  it("includes post-compaction header and history guidance in injected sheet after session_compact", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("history checkpoint (turn 1, post-compaction)");
+    expect(forced.entries[0].content).toContain("Context was recently compacted. Review your compass above; if strategic orientation was lost, inspect your focus history via self-org-workpad-history.");
+
+    // Next turn without compaction does not include post-compaction header or trigger
+    await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context()); // cadence counter = 1
+    const nextCadence = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context()); // cadence counter = 2
+    expect(nextCadence.entries).toHaveLength(1);
+    expect(nextCadence.entries[0].content).toContain("history checkpoint (turn 3)");
+    expect(nextCadence.entries[0].content).not.toContain("post-compaction");
+  });
+
+  it("includes post-compaction header and empty guidance in injected sheet when workpad is empty after session_compact", async () => {
+    const { handlers } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("checkpoint (turn 1, post-compaction): the workpad is empty.");
+    expect(forced.entries[0].content).toContain("Context was recently compacted. Review or set your steering state, or inspect past focus via self-org-workpad-history.");
   });
 });

@@ -10,5 +10,6 @@ build/
 *.jsonl
 .herdr-*-report.md
 cg-task-result-*.md
+extracted-workpads/
 
 .codegiant/

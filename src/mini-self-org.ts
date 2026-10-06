@@ -15,9 +15,10 @@ const HISTORY_DEFAULT_LIMIT = 10;
 const HISTORY_MAX_LIMIT = 15;
 const MAX_OVERALL_GOAL_LENGTH = 500;
 const MAX_CURRENT_FOCUS_LENGTH = 500;
-const MAX_ITEM_LENGTH = 300;
+const MAX_ITEM_LENGTH = 500;
 export const MAX_ITEMS = 5;
-const MEMORY_BOUNDARY_GUIDANCE = "Use self-org-workpad-set only to keep higher-level goals and durable steering close when they may otherwise fall out of the context window. Do not copy details already available in the conversation or tool results, especially facts that can quickly go stale; re-derive those when needed.";
+export const MAX_BLOCKERS = 3;
+const MEMORY_BOUNDARY_GUIDANCE = "Use self-org-workpad-set for higher-level goals and durable steering (the compass). Write intent (what you aim to achieve), not cursor status. Detailed investigation, logs, and volatile findings belong in files on disk (the working memory); retain at most one durable working memory pointer in notes (e.g. [verified] Working memory: docs/investigation.md). Do not copy details already available in the conversation or tool results; re-derive those when needed.";
 const LIST_GUIDANCE = "Keep self-org-workpad-set lists to 1–3 items typically (max 5).";
 const EVIDENCE_TAG_GUIDANCE = "In self-org-workpad-set, use [unverified], [verified], or [research] as confidence labels on notes and blockers; they label steering items, not an evidence log.";
 const TOOL_NAME_GUIDANCE = "The only registered mini-self-org tools are self-org-workpad-set, self-org-workpad-get, and self-org-workpad-history; workpad alone is not registered and must never be called as a tool.";
@@ -74,21 +75,21 @@ export interface UserDirective {
 }
 
 export const WorkpadParameters = Type.Object({
-  overallGoal: Type.Union([Type.String({ minLength: 1, maxLength: MAX_OVERALL_GOAL_LENGTH }), Type.Null()], {
+  overallGoal: Type.Union([Type.String({ maxLength: MAX_OVERALL_GOAL_LENGTH }), Type.Null()], {
     description: "Stable, high-level outcome for the active session-local work thread; null when absent.",
   }),
-  currentFocus: Type.Union([Type.String({ minLength: 1, maxLength: MAX_CURRENT_FOCUS_LENGTH }), Type.Null()], {
+  currentFocus: Type.Union([Type.String({ maxLength: MAX_CURRENT_FOCUS_LENGTH }), Type.Null()], {
     description: "Current strategic focus within the overall goal, not the latest command, tool result, or status observation; null when absent.",
   }),
-  nextActions: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
+  nextActions: Type.Array(Type.String({ maxLength: MAX_ITEM_LENGTH }), {
     maxItems: MAX_ITEMS,
     description: "A few high-level upcoming moves, not a tool-by-tool checklist or task log.",
   }),
-  blockers: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
-    maxItems: 2,
+  blockers: Type.Array(Type.String({ maxLength: MAX_ITEM_LENGTH }), {
+    maxItems: MAX_BLOCKERS,
     description: "Durable constraints that block progress; exclude transient command failures and status observations.",
   }),
-  notes: Type.Array(Type.String({ minLength: 1, maxLength: MAX_ITEM_LENGTH }), {
+  notes: Type.Array(Type.String({ maxLength: MAX_ITEM_LENGTH }), {
     maxItems: MAX_ITEMS,
     description: "Durable hypotheses, decisions, and constraints needed after compaction; exclude logs, tool output, versions, and rediscoverable findings.",
   }),
@@ -108,35 +109,117 @@ function sanitizeText(value: unknown, maximumLength: number): string | undefined
   return text.length > 0 && text.length <= maximumLength ? text : undefined;
 }
 
-function sanitizeNullableText(value: unknown, maximumLength: number): string | null | undefined {
-  return value === null ? null : sanitizeText(value, maximumLength);
-}
+export function validateSnapshot(value: unknown): { ok: true; snapshot: WorkpadSnapshot } | { ok: false; reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "arguments must be a JSON object" };
+  }
+  const candidate = value as Record<string, unknown>;
 
-function sanitizeList(value: unknown, maximumItems: number): string[] | undefined {
-  if (!Array.isArray(value) || value.length > maximumItems) return undefined;
-  const items = value.map((item) => sanitizeText(item, MAX_ITEM_LENGTH));
-  return items.every((item): item is string => item !== undefined) ? items : undefined;
+  const hasCurrentFields =
+    Object.prototype.hasOwnProperty.call(candidate, "overallGoal") ||
+    Object.prototype.hasOwnProperty.call(candidate, "currentFocus");
+
+  let overallGoal: string | null = null;
+  let currentFocus: string | null = null;
+
+  if (hasCurrentFields) {
+    if (candidate.overallGoal === undefined) {
+      return { ok: false, reason: "overallGoal is required (pass a string or null)" };
+    }
+    if (candidate.overallGoal !== null && typeof candidate.overallGoal !== "string") {
+      return { ok: false, reason: "overallGoal must be a string or null" };
+    }
+    if (typeof candidate.overallGoal === "string") {
+      const trimmed = candidate.overallGoal.trim();
+      if (trimmed.length > MAX_OVERALL_GOAL_LENGTH) {
+        return { ok: false, reason: `overallGoal exceeds maximum length of ${MAX_OVERALL_GOAL_LENGTH} characters (${trimmed.length} chars received)` };
+      }
+      overallGoal = trimmed.length === 0 ? null : trimmed;
+    }
+
+    if (candidate.currentFocus === undefined) {
+      return { ok: false, reason: "currentFocus is required (pass a string or null)" };
+    }
+    if (candidate.currentFocus !== null && typeof candidate.currentFocus !== "string") {
+      return { ok: false, reason: "currentFocus must be a string or null" };
+    }
+    if (typeof candidate.currentFocus === "string") {
+      const trimmed = candidate.currentFocus.trim();
+      if (trimmed.length > MAX_CURRENT_FOCUS_LENGTH) {
+        return { ok: false, reason: `currentFocus exceeds maximum length of ${MAX_CURRENT_FOCUS_LENGTH} characters (${trimmed.length} chars received)` };
+      }
+      currentFocus = trimmed.length === 0 ? null : trimmed;
+    }
+  } else {
+    if (candidate.goal === undefined) {
+      return { ok: false, reason: "overallGoal and currentFocus are required" };
+    }
+    if (candidate.goal !== null && typeof candidate.goal !== "string") {
+      return { ok: false, reason: "goal must be a string or null" };
+    }
+    if (typeof candidate.goal === "string") {
+      const trimmed = candidate.goal.trim();
+      if (trimmed.length > MAX_CURRENT_FOCUS_LENGTH) {
+        return { ok: false, reason: `goal exceeds maximum length of ${MAX_CURRENT_FOCUS_LENGTH} characters (${trimmed.length} chars received)` };
+      }
+      currentFocus = trimmed.length === 0 ? null : trimmed;
+    }
+  }
+
+  const validateFieldList = (
+    key: "nextActions" | "blockers" | "notes",
+    maxItems: number,
+  ): { ok: true; list: string[] } | { ok: false; reason: string } => {
+    const list = candidate[key];
+    if (!Array.isArray(list)) {
+      return { ok: false, reason: `${key} must be an array of strings, not ${typeof list}` };
+    }
+    if (list.length > maxItems) {
+      return { ok: false, reason: `${key} has ${list.length} items; max is ${maxItems}` };
+    }
+    const sanitized: string[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      if (typeof item !== "string") {
+        return { ok: false, reason: `${key}[${i}] must be a string` };
+      }
+      const trimmed = item.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      if (trimmed.length > MAX_ITEM_LENGTH) {
+        return { ok: false, reason: `${key}[${i}] exceeds maximum length of ${MAX_ITEM_LENGTH} characters (${trimmed.length} chars received)` };
+      }
+      sanitized.push(trimmed);
+    }
+    return { ok: true, list: sanitized };
+  };
+
+  const nextActionsRes = validateFieldList("nextActions", MAX_ITEMS);
+  if (!nextActionsRes.ok) return nextActionsRes;
+
+  const blockersRes = validateFieldList("blockers", MAX_BLOCKERS);
+  if (!blockersRes.ok) return blockersRes;
+
+  const notesRes = validateFieldList("notes", MAX_ITEMS);
+  if (!notesRes.ok) return notesRes;
+
+  return {
+    ok: true,
+    snapshot: {
+      overallGoal,
+      currentFocus,
+      nextActions: nextActionsRes.list,
+      blockers: blockersRes.list,
+      notes: notesRes.list,
+    },
+  };
 }
 
 /** Returns a detached, sanitized current snapshot, or migrates a legacy goal to currentFocus without inventing an overallGoal. */
 export function sanitizeSnapshot(value: unknown): WorkpadSnapshot | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const candidate = value as Record<string, unknown>;
-  const nextActions = sanitizeList(candidate.nextActions, MAX_ITEMS);
-  const blockers = sanitizeList(candidate.blockers, 2);
-  const notes = sanitizeList(candidate.notes, MAX_ITEMS);
-  if (!nextActions || !blockers || !notes) return undefined;
-
-  const hasCurrentFields = Object.prototype.hasOwnProperty.call(candidate, "overallGoal") || Object.prototype.hasOwnProperty.call(candidate, "currentFocus");
-  if (hasCurrentFields) {
-    const overallGoal = sanitizeNullableText(candidate.overallGoal, MAX_OVERALL_GOAL_LENGTH);
-    const currentFocus = sanitizeNullableText(candidate.currentFocus, MAX_CURRENT_FOCUS_LENGTH);
-    return overallGoal !== undefined && currentFocus !== undefined ? { overallGoal, currentFocus, nextActions, blockers, notes } : undefined;
-  }
-
-  const legacyGoal = sanitizeNullableText(candidate.goal, MAX_CURRENT_FOCUS_LENGTH);
-  if (legacyGoal === undefined) return undefined;
-  return { overallGoal: null, currentFocus: legacyGoal, nextActions, blockers, notes };
+  const result = validateSnapshot(value);
+  return result.ok ? result.snapshot : undefined;
 }
 
 /** Minimal read-only branch access needed by reconstruction; avoids coupling to the full ExtensionContext. */
@@ -304,30 +387,52 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
 }
 
 /** Renders the periodic empty-workpad nudge sheet (scheduled mode): reminds the agent to set steering state. Carries no snapshot payload. */
-function emptyNudgeBody(turnIndex: number): string {
-  return [
-    `Mini self-org workpad — checkpoint (turn ${turnIndex}): the workpad is empty.`,
+function emptyNudgeBody(turnIndex: number, postCompaction = false): string {
+  const header = postCompaction
+    ? `Mini self-org workpad — checkpoint (turn ${turnIndex}, post-compaction): the workpad is empty.`
+    : `Mini self-org workpad — checkpoint (turn ${turnIndex}): the workpad is empty.`;
+  const lines = [
+    header,
     "Periodic reminder: if this session has a sustained objective, set steering state via self-org-workpad-set (overallGoal, currentFocus, nextActions, blockers, notes). One-off requests can stay empty.",
-    "Do not acknowledge this reminder.",
-  ].join("\n");
+  ];
+  if (postCompaction) {
+    lines.push("Context was recently compacted. Review or set your steering state, or inspect past focus via self-org-workpad-history.");
+  }
+  lines.push("Do not acknowledge this reminder.");
+  return lines.join("\n");
 }
 
 /** Renders the passive history checkpoint sheet body (R2 self-ownership phrasing, Q3 verbatim lines). */
-function historySheetBody(snapshot: WorkpadSnapshot, turnIndex: number, directive: UserDirective | null = null): string {
+function historySheetBody(
+  snapshot: WorkpadSnapshot,
+  turnIndex: number,
+  directive: UserDirective | null = null,
+  postCompaction = false,
+): string {
+  const header = postCompaction
+    ? `Mini self-org workpad — history checkpoint (turn ${turnIndex}, post-compaction)`
+    : `Mini self-org workpad — history checkpoint (turn ${turnIndex})`;
   const directiveBlock = directive
     ? `[USER DIRECTIVE] (Authoritative, set by human user — immutable):\n${directive.text}\n\n` +
       "[AGENT WORKING STATE] (Your own scratchpad, set via self-org-workpad-set):\n"
     : "";
-  const body = [
-    `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+  const framing = directive
+    ? "Framing: Never acknowledge, restate, or quote this block back to the user; use both sections silently to steer your execution."
+    : "This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.";
+  const lines = [
+    header,
     directiveBlock,
-    directive ? "Framing: Never acknowledge, restate, or quote this block back to the user; use both sections silently to steer your execution."
-      : "This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.",
+    framing,
     `Turn index: ${turnIndex}`,
+  ];
+  if (postCompaction) {
+    lines.push("Context was recently compacted. Review your compass above; if strategic orientation was lost, inspect your focus history via self-org-workpad-history.");
+  }
+  lines.push(
     "Later tool activity may supersede this; authoritative state is maintained via the workpad tool.",
     hasContent(snapshot) ? formatFields(snapshot) : "The agent's scratchpad is currently empty.",
-  ].filter((line): line is string => line !== "").join("\n");
-  return body;
+  );
+  return lines.filter((line): line is string => line !== "").join("\n");
 }
 
 interface StructuralComponent {
@@ -372,6 +477,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let snapshot = emptySnapshot();
   let turnsSinceLastAppend = 0;
   let forceNextAppend = false;
+  let isPostCompaction = false;
   let sessionTurnCount = 0;
   let userDirective: UserDirective | null = null;
   // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
@@ -380,6 +486,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
     userDirective = reconstructUserDirective(ctx);
+    isPostCompaction = false;
     if (injectionPolicy.scheduledInterval !== undefined) {
       turnsSinceLastAppend = 0;
     }
@@ -406,6 +513,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
   pi.on("session_compact", async () => {
     forceNextAppend = true;
+    isPostCompaction = true;
   });
   // Passive history append: every N completed turns (scheduled) or on the first completed turn
   // after each user-submitted agent loop (user-boundary), re-append the workpad state as a
@@ -427,6 +535,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     const scheduledDue =
       injectionPolicy.scheduledInterval !== undefined &&
       (turnsSinceLastAppend >= injectionPolicy.scheduledInterval || forceAppend);
+    const postCompaction = forceAppend && isPostCompaction;
     // Coalesce at most one sheet per turn; a boundary-only sheet never resets the
     // scheduled cadence, so composition keeps both triggers' standalone meaning.
     // The user directive rides the same cadence: with a directive active and an empty
@@ -434,12 +543,13 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     if ((hasContent(snapshot) || userDirective !== null) && (boundaryDue || scheduledDue || forceAppend)) {
       pendingUserBoundary = false;
       forceNextAppend = false;
+      isPostCompaction = false;
       if (scheduledDue) turnsSinceLastAppend = 0;
       return {
         entries: [{
           type: "custom_message",
           customType: WORKPAD_CUSTOM_TYPE,
-          content: historySheetBody(snapshot, sessionTurnCount, userDirective),
+          content: historySheetBody(snapshot, sessionTurnCount, userDirective, postCompaction),
           display: false,
           details: hasContent(snapshot)
             ? { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } }
@@ -452,12 +562,13 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     // turn can emit it.
     if (scheduledDue) {
       forceNextAppend = false;
+      isPostCompaction = false;
       turnsSinceLastAppend = 0;
       return {
         entries: [{
           type: "custom_message",
           customType: WORKPAD_CUSTOM_TYPE,
-          content: emptyNudgeBody(sessionTurnCount),
+          content: emptyNudgeBody(sessionTurnCount, postCompaction),
           display: false,
           details: {},
         }],
@@ -473,11 +584,11 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     promptGuidelines: [MEMORY_BOUNDARY_GUIDANCE, STALE_STATE_GUIDANCE, RECALL_GUIDANCE, LIST_GUIDANCE, EVIDENCE_TAG_GUIDANCE],
     parameters: WorkpadParameters,
     async execute(_toolCallId, params) {
-      const next = sanitizeSnapshot(params);
-      if (!next) {
-        return { content: [{ type: "text", text: "Mini self-org workpad update rejected." }], details: {} as WorkpadDetails, isError: true };
+      const validation = validateSnapshot(params);
+      if (!validation.ok) {
+        return { content: [{ type: "text", text: `Mini self-org workpad update rejected: ${validation.reason}.` }], details: {} as WorkpadDetails, isError: true };
       }
-      snapshot = next;
+      snapshot = validation.snapshot;
       return {
         content: [{ type: "text", text: hasContent(snapshot) ? "Mini self-org workpad updated." : "Mini self-org workpad cleared. No context will be injected." }],
         details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } } as WorkpadDetails,
