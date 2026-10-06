@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, sanitizeSnapshot, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, reconstructUserDirective, sanitizeSnapshot, USER_PIN_CUSTOM_TYPE, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "self-org-workpad-set";
 const HISTORICAL_TOOL_NAME = "mini-self-org-workpad";
@@ -18,6 +18,7 @@ function setup() {
     on: vi.fn((name: string, handler: Handler) => handlers.set(name, handler)),
     registerTool: vi.fn((definition) => tools.set(definition.name, definition)),
     registerCommand: vi.fn((name, definition) => commands.set(name, { name, ...definition })),
+    appendEntry: vi.fn(),
   } as unknown as ExtensionAPI;
   miniSelfOrg(pi);
   return { handlers, tool: tools.get(TOOL_NAME), tools, commands, pi };
@@ -42,6 +43,9 @@ const workpadEntry = (toolName: string, snapshot: unknown, timestamp = 0) => ({
   message: { role: "toolResult", toolName, details: { snapshot }, timestamp },
 });
 const valid = { overallGoal: " Ship ", currentFocus: " Test focus ", nextActions: [" Test "], blockers: [], notes: [" Keep small "] };
+const pinEntry = (text: string | null, timestamp = 1) => ({ type: "custom", customType: USER_PIN_CUSTOM_TYPE, data: { text, timestamp } });
+
+const commandCtx = (ui: Record<string, any> = {}) => ({ hasUI: false, ui: { notify: vi.fn(), ...ui }, sessionManager: { getBranch: () => [] } });
 
 describe("miniSelfOrg", () => {
   it("separates overall goal from current focus and migrates legacy snapshots without inventing an overall goal", () => {
@@ -1214,6 +1218,311 @@ describe("miniSelfOrg", () => {
     const r1 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch);
     expect(r1.entries).toHaveLength(1);
     expect(r1.entries[0].content).toContain("Turn index: 3");
+  });
+
+  // ── User-Pinned Directive: reconstruction (spec §7) ──────────────────────
+
+  it("reconstructs a pinned directive from a pin entry on session_start (pin → reload → restored)", async () => {
+    const { handlers, commands } = setup();
+    const branch = context([pinEntry("Never touch legacy DB tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("", { ui: { notify } });
+    const output = notify.mock.calls[0][0] as string;
+    expect(output).toContain("[User directive] (set by user, immutable)");
+    expect(output).toContain("Never touch legacy DB tables");
+  });
+
+  it("pin → unpin → pin: newest pin wins, unpin clears without resurrecting the stale pin", () => {
+    // Newest entry wins unconditionally: a later unpin (null) clears even though an older pin exists.
+    const cleared = reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null)]));
+    expect(cleared).toBeNull();
+    // A newer pin after the unpin restores the directive.
+    expect(reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null), pinEntry("New guardrail")])))
+      .toEqual({ text: "New guardrail", timestamp: 1 });
+    // Only pins, newest wins.
+    expect(reconstructUserDirective(context([pinEntry("First"), pinEntry("Second")])!)).toEqual({ text: "Second", timestamp: 1 });
+    // No pin entries at all → null.
+    expect(reconstructUserDirective(context([workpadEntry(TOOL_NAME, valid)]))).toBeNull();
+  });
+
+  it("sanitizes corrupted pin entries defensively (non-string, whitespace, >300 chars → null)", () => {
+    expect(reconstructUserDirective(context([{ type: "custom", customType: USER_PIN_CUSTOM_TYPE, data: { text: 42, timestamp: 1 } }]))).toBeNull();
+    expect(reconstructUserDirective(context([pinEntry("   ")]))).toBeNull();
+    expect(reconstructUserDirective(context([pinEntry("x".repeat(301))]))).toBeNull();
+    // Trimming is applied: "  keep it short  " → "keep it short".
+    expect(reconstructUserDirective(context([pinEntry(" keep it short ")]))).toEqual({ text: "keep it short", timestamp: 1 });
+    // Exactly 300 chars is allowed.
+    expect(reconstructUserDirective(context([pinEntry("x".repeat(300))]))!.text).toHaveLength(300);
+  });
+
+  it("pin entries do not affect reconstructSnapshot, reconstructLastPersisted, or reconstructHistory", () => {
+    const withPin = [workpadEntry(TOOL_NAME, valid), pinEntry("Guardrail"), pinEntry(null), pinEntry("Second")];
+    const withoutPin = [workpadEntry(TOOL_NAME, valid)];
+    expect(reconstructSnapshot(context(withPin))).toEqual(reconstructSnapshot(context(withoutPin)));
+    const customSheet = { type: "custom_message", customType: WORKPAD_CUSTOM_TYPE, content: "sheet", display: false, details: { snapshot: valid } };
+    expect(reconstructLastPersisted(context([pinEntry("G"), customSheet]))).toEqual(reconstructLastPersisted(context([customSheet])));
+    expect(reconstructHistory(context([...withPin, customSheet]))).toEqual(reconstructHistory(context([...withoutPin, customSheet])));
+  });
+
+  // ── User-Pinned Directive: formatting (spec §3.2, §7) ────────────────────
+
+  it("formatWorkpad: legacy exact format when no directive (non-empty and empty snapshot)", () => {
+    const clean = { overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] };
+    expect(formatWorkpad(clean)).toBe("Mini self-org workpad\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small");
+    expect(formatWorkpad(emptySnapshot(), null)).toBe("Mini self-org workpad\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]");
+  });
+
+  it("formatWorkpad: with active directive, directive block first; scratchpad header only for non-empty pad", () => {
+    const directive = { text: "Backwards-compat with v1.", timestamp: 1 };
+    const clean = { overallGoal: "Ship", currentFocus: "Focus", nextActions: ["A"], blockers: [], notes: [] };
+    expect(formatWorkpad(clean, directive)).toBe(
+      "Mini self-org workpad\n[User directive] (set by user, immutable):\nBackwards-compat with v1.\n\n[Agent scratchpad]\nOverall goal: Ship\nCurrent focus: Focus\nNext actions:\n- A\nBlockers: [none]\nNotes: [none]"
+    );
+    // Empty pad + directive: directive block without [Agent scratchpad] header.
+    expect(formatWorkpad(emptySnapshot(), directive)).toBe(
+      "Mini self-org workpad\n[User directive] (set by user, immutable):\nBackwards-compat with v1.\n\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]"
+    );
+  });
+
+  // ── User-Pinned Directive: workpad-get combined view (spec §3.2, §7) ─────
+
+  it("workpad-get returns combined view after session_start reconstructs the directive", async () => {
+    const { handlers, tools } = setup();
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const branch = context([pinEntry("Never touch legacy DB tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await get.execute("id", {});
+    const text = result.content[0].text as string;
+    expect(text).toContain("[User directive] (set by user, immutable)");
+    expect(text).toContain("Never touch legacy DB tables");
+  });
+
+  // ── User-Pinned Directive: pinned text survives agent overwrites (spec §7) ─
+
+  it("pinned directive survives agent self-org-workpad-set overwrite and full clear", async () => {
+    const { handlers, tool, tools } = setup();
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const branch = context([pinEntry("Keep guardrails on")]);
+    await handlers.get("session_start")?.({}, branch);
+    // Agent overwrites the snapshot with new content.
+    await tool.execute("id", valid);
+    let text = (await get.execute("id", {})).content[0].text as string;
+    expect(text).toContain("Keep guardrails on");
+    expect(text).toContain("Overall goal: Ship");
+    // Agent fully clears the snapshot — directive remains.
+    await tool.execute("id", emptySnapshot());
+    text = (await get.execute("id", {})).content[0].text as string;
+    expect(text).toContain("[User directive] (set by user, immutable)");
+    expect(text).toContain("Keep guardrails on");
+  });
+
+  // ── User-Pinned Directive: unified sheet at turn_end (spec §3.3, §7) ─────
+
+  it("unified sheet with active directive and non-empty pad: directive block + agent fields + R2 framing", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Backwards-compat with v1.")]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const content = r1.entries[0].content as string;
+    expect(content).toContain("Mini self-org workpad — history checkpoint (turn 1)");
+    expect(content).toContain("[USER DIRECTIVE] (Authoritative, set by human user — immutable)");
+    expect(content).toContain("Backwards-compat with v1.");
+    expect(content).toContain("[AGENT WORKING STATE]");
+    expect(content).toContain("Overall goal: Ship");
+    expect(content).toContain("Turn index: 1");
+    expect(content).toContain("Later tool activity may supersede this");
+    expect(r1.entries[0].details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+  });
+
+  it("empty pad + active directive + scheduled due: unified sheet with empty-scratchpad note (NOT the nudge)", async () => {
+    const { handlers } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Keep guardrails on")]);
+    await handlers.get("session_start")?.({}, branch);
+    // Force from reconstruct → first completed turn emits the unified directive-only sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const content = r1.entries[0].content as string;
+    expect(content).toContain("[USER DIRECTIVE]");
+    expect(content).toContain("The agent's scratchpad is currently empty.");
+    expect(content).not.toContain("the workpad is empty");
+    expect(r1.entries[0].details).toEqual({});
+    // Window reset: turn 2 counter=1 < 2 → no emit.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Turn 3 counter=2 → scheduled due → directive sheet again (still no nudge).
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content as string).not.toContain("the workpad is empty");
+    expect(r3.entries[0].content as string).toContain("The agent's scratchpad is currently empty.");
+  });
+
+  it("user-boundary + directive + empty pad: sheet emitted and boundary CONSUMED; next turn without new boundary does not re-emit", async () => {
+    const { handlers } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Never force-push")]);
+    await handlers.get("session_start")?.({}, branch);
+    await handlers.get("before_agent_start")?.({}, context());
+    // First completed turn: boundary due, directive active, pad empty → unified sheet, boundary consumed.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect((r1.entries[0].content as string)).toContain("[USER DIRECTIVE]");
+    // Second completed turn in same loop: boundary consumed, nothing due → no emit (no per-turn spam).
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Re-arm: boundary due again → emit again.
+    await handlers.get("before_agent_start")?.({}, context());
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("no directive, empty pad, no trigger due: nothing emitted (unchanged); nudge unchanged for scheduled due", async () => {
+    const { handlers } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    await handlers.get("before_agent_start")?.({}, context());
+    // Boundary-only due, empty pad, no directive → no emit, boundary preserved.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Scheduled due on turn 3 → nudge (no directive active).
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect((r3.entries[0].content as string)).toContain("the workpad is empty");
+    expect(r3.entries[0].details).toEqual({});
+  });
+
+  // ── User-Pinned Directive: command routing (spec §4, §7) ─────────────────
+
+  it("pin preserves internal whitespace in the text (split on first whitespace only)", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    const ctx = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+    await commands.get("mini-self-org").handler("pin keep  all", ctx);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][1].text).toBe("keep  all");
+  });
+
+  it("pin preserves multiline text beyond outer trim; formatWorkpad renders it intact", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    const ctx = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+    await commands.get("mini-self-org").handler("pin  line one\nline two  ", ctx);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][1].text).toBe("line one\nline two");
+    const rendered = formatWorkpad(emptySnapshot(), { text: "line one\nline two", timestamp: 1 });
+    expect(rendered).toContain("[User directive] (set by user, immutable):\nline one\nline two\n\nOverall goal: [none]");
+  });
+
+  it("pin <text>: appends a pin entry, confirms, and in never mode turn_end stays silent", async () => {
+    const { pi, commands, handlers } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    const ctx = { ...commandCtx({ notify }), hasUI: false, ui: { notify } };
+    await commands.get("mini-self-org").handler("  pin   Never touch legacy DB tables  ", ctx);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+    const data = appendSpy.mock.calls[0][1];
+    expect(data.text).toBe("Never touch legacy DB tables");
+    expect(typeof data.timestamp).toBe("number");
+    expect(notify.mock.calls[0][0]).toContain("pinned");
+    // never mode: forceNextAppend stays inert — turn_end emits nothing even with a directive.
+    const turnEnd = handlers.get("turn_end");
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
+  });
+
+  it("pin/unpin arm forceNextAppend in persistent mode: next completed turn emits immediately", async () => {
+    const { pi, commands, handlers } = setupWithInjection("scheduled:5");
+    const appendSpy = (pi as any).appendEntry;
+    const turnEnd = handlers.get("turn_end")!;
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("pin Keep changes backwards-compatible", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    // scheduled:5 with no pad content, but forceNextAppend set → first completed turn emits the unified sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect((r1.entries[0].content as string)).toContain("Keep changes backwards-compatible");
+    // Force consumed: turn 2 counter=1 < 5 → nothing (even with directive active).
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("pin (no text) with hasUI=true: opens input prompt and pins the entered text", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const input = vi.fn().mockResolvedValue("  From the prompt  ");
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("pin", { hasUI: true, ui: { input, notify }, sessionManager: { getBranch: () => [] } });
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][1].text).toBe("From the prompt");
+    expect(notify.mock.calls[0][0]).toContain("pinned");
+  });
+
+  it("pin (no text) with hasUI=false: usage error, no entry written", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("pin", { ...commandCtx({ notify }), hasUI: false });
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(notify.mock.calls[0][0]).toContain("argument required, no interactive UI available");
+    expect(notify.mock.calls[0][1]).toBe("error");
+  });
+
+  it("pin rejects empty/whitespace-only and >300-char text without writing entries", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    const ctx = { hasUI: true, ui: { notify, input: vi.fn().mockResolvedValue("  ") }, sessionManager: { getBranch: () => [] } };
+    // Whitespace-only input from prompt → "Nothing to pin"
+    await commands.get("mini-self-org").handler("pin", ctx);
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(notify.mock.calls[0][0]).toContain("Nothing to pin");
+    // >300 chars via direct argument
+    const ctx2 = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+    await commands.get("mini-self-org").handler(`pin ${"x".repeat(301)}`, ctx2);
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(notify.mock.calls[1][0]).toContain("300");
+  });
+
+  it("/mini-self-org unpin: appends null-text entry and clears the directive", async () => {
+    const { pi, handlers, commands } = setupWithInjection("scheduled:1");
+    const appendSpy = (pi as any).appendEntry;
+    const turnEnd = handlers.get("turn_end")!;
+    // Pin first.
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("pin Old guardrail", { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } });
+    expect(appendSpy.mock.calls[0][1].text).toBe("Old guardrail");
+    // forceNextAppend armed → unified sheet carries the directive.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("[USER DIRECTIVE]");
+    const notify2 = vi.fn();
+    await commands.get("mini-self-org").handler("unpin", { hasUI: false, ui: { notify: notify2 }, sessionManager: { getBranch: () => [] } });
+    expect(appendSpy).toHaveBeenCalledTimes(2);
+    expect(appendSpy.mock.calls[1][0]).toBe(USER_PIN_CUSTOM_TYPE);
+    expect(appendSpy.mock.calls[1][1].text).toBeNull();
+    expect(notify2.mock.calls[0][0]).toContain("unpinned");
+    // scheduled:1 is due again, but the in-memory directive is cleared and the pad is empty → nudge, not a directive sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).not.toContain("[USER DIRECTIVE]");
+    expect(r2.entries[0].content).toContain("the workpad is empty");
+    // Reconstruction confirms the cleared state from the branch.
+    expect(reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null)]))).toBeNull();
+  });
+
+  it("unknown subcommand → usage help listing pin and unpin; display without directive matches legacy format", async () => {
+    const { commands } = setup();
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("bogus", { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } });
+    const usage = notify.mock.calls[0][0] as string;
+    expect(usage.toLowerCase()).toContain("pin");
+    expect(usage.toLowerCase()).toContain("unpin");
+    // Display: no directive → legacy exact format.
+    const notify2 = vi.fn();
+    await commands.get("mini-self-org").handler("", { hasUI: false, ui: { notify: notify2 }, sessionManager: { getBranch: () => [] } });
+    expect(notify2.mock.calls[0][0]).toBe(formatWorkpad(emptySnapshot()));
   });
 
   it("composite: context hook remains strip-only", async () => {

@@ -9,6 +9,8 @@ const HISTORICAL_WORKPAD_TOOL_NAME = "mini-self-org-workpad";
 const LEGACY_WORKPAD_TOOL_NAME = "workpad";
 const HISTORY_TOOL_NAME = "self-org-workpad-history";
 const WORKPAD_WRITE_TOOL_NAMES = [WORKPAD_TOOL_NAME, HISTORICAL_WORKPAD_TOOL_NAME, LEGACY_WORKPAD_TOOL_NAME];
+export const USER_PIN_CUSTOM_TYPE = "mini-self-org-user-pin";
+const MAX_USER_DIRECTIVE_LENGTH = 300;
 const HISTORY_DEFAULT_LIMIT = 10;
 const HISTORY_MAX_LIMIT = 15;
 const MAX_OVERALL_GOAL_LENGTH = 500;
@@ -64,6 +66,11 @@ export interface WorkpadSnapshot {
 
 interface WorkpadDetails {
   snapshot?: WorkpadSnapshot;
+}
+
+export interface UserDirective {
+  text: string;
+  timestamp: number;
 }
 
 export const WorkpadParameters = Type.Object({
@@ -268,8 +275,28 @@ function formatFields(snapshot: WorkpadSnapshot): string {
   ].join("\n");
 }
 
-export function formatWorkpad(snapshot: WorkpadSnapshot): string {
-  return `Mini self-org workpad\n${formatFields(snapshot)}`;
+export function formatWorkpad(snapshot: WorkpadSnapshot, directive: UserDirective | null = null): string {
+  if (!directive) {
+    return `Mini self-org workpad\n${formatFields(snapshot)}`;
+  }
+  const fields = hasContent(snapshot) ? `[Agent scratchpad]\n${formatFields(snapshot)}` : formatFields(snapshot);
+  return `Mini self-org workpad\n[User directive] (set by user, immutable):\n${directive.text}\n\n${fields}`;
+}
+
+/** Reads the branch's newest USER_PIN_CUSTOM_TYPE entry (any text, including null/cleared); sanitizes defensively. */
+export function reconstructUserDirective(ctx: BranchSource): UserDirective | null {
+  const branch = ctx.sessionManager.getBranch();
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index] as { type?: string; customType?: string; data?: { text?: unknown; timestamp?: unknown } } | undefined;
+    if (entry?.type !== "custom" || entry.customType !== USER_PIN_CUSTOM_TYPE) continue;
+    const raw = entry.data;
+    if (raw?.text === null || raw?.text === undefined) return null;
+    const text = sanitizeText(raw.text, MAX_USER_DIRECTIVE_LENGTH);
+    if (text === undefined) return null;
+    const timestamp = typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? raw.timestamp : 0;
+    return { text, timestamp };
+  }
+  return null;
 }
 
 function hasContent(snapshot: WorkpadSnapshot): boolean {
@@ -286,14 +313,21 @@ function emptyNudgeBody(turnIndex: number): string {
 }
 
 /** Renders the passive history checkpoint sheet body (R2 self-ownership phrasing, Q3 verbatim lines). */
-function historySheetBody(snapshot: WorkpadSnapshot, turnIndex: number): string {
-  return [
+function historySheetBody(snapshot: WorkpadSnapshot, turnIndex: number, directive: UserDirective | null = null): string {
+  const directiveBlock = directive
+    ? `[USER DIRECTIVE] (Authoritative, set by human user — immutable):\n${directive.text}\n\n` +
+      "[AGENT WORKING STATE] (Your own scratchpad, set via self-org-workpad-set):\n"
+    : "";
+  const body = [
     `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
-    "This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.",
+    directiveBlock,
+    directive ? "Framing: Never acknowledge, restate, or quote this block back to the user; use both sections silently to steer your execution."
+      : "This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.",
     `Turn index: ${turnIndex}`,
     "Later tool activity may supersede this; authoritative state is maintained via the workpad tool.",
-    formatFields(snapshot),
-  ].join("\n");
+    hasContent(snapshot) ? formatFields(snapshot) : "The agent's scratchpad is currently empty.",
+  ].filter((line): line is string => line !== "").join("\n");
+  return body;
 }
 
 interface StructuralComponent {
@@ -339,11 +373,13 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let turnsSinceLastAppend = 0;
   let forceNextAppend = false;
   let sessionTurnCount = 0;
+  let userDirective: UserDirective | null = null;
   // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
   let pendingUserBoundary = false;
   const anyPersistentTrigger = () => injectionPolicy.userBoundary || injectionPolicy.scheduledInterval !== undefined;
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
+    userDirective = reconstructUserDirective(ctx);
     if (injectionPolicy.scheduledInterval !== undefined) {
       turnsSinceLastAppend = 0;
     }
@@ -393,7 +429,9 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       (turnsSinceLastAppend >= injectionPolicy.scheduledInterval || forceAppend);
     // Coalesce at most one sheet per turn; a boundary-only sheet never resets the
     // scheduled cadence, so composition keeps both triggers' standalone meaning.
-    if (hasContent(snapshot) && (boundaryDue || scheduledDue || forceAppend)) {
+    // The user directive rides the same cadence: with a directive active and an empty
+    // pad, a due turn emits the unified sheet (not the nudge) and consumes all triggers.
+    if ((hasContent(snapshot) || userDirective !== null) && (boundaryDue || scheduledDue || forceAppend)) {
       pendingUserBoundary = false;
       forceNextAppend = false;
       if (scheduledDue) turnsSinceLastAppend = 0;
@@ -401,14 +439,17 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         entries: [{
           type: "custom_message",
           customType: WORKPAD_CUSTOM_TYPE,
-          content: historySheetBody(snapshot, sessionTurnCount),
+          content: historySheetBody(snapshot, sessionTurnCount, userDirective),
           display: false,
-          details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } },
+          details: hasContent(snapshot)
+            ? { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } }
+            : {},
         }],
       };
     }
-    // Empty pad: a due scheduled window or force consumes a nudge sheet; a boundary-only
-    // due keeps the boundary (and force) pending so a later non-empty turn can emit it.
+    // Empty pad, no directive: a due scheduled window or force consumes a nudge sheet;
+    // a boundary-only due keeps the boundary (and force) pending so a later non-empty
+    // turn can emit it.
     if (scheduledDue) {
       forceNextAppend = false;
       turnsSinceLastAppend = 0;
@@ -456,7 +497,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     promptGuidelines: [],
     parameters: WorkpadGetParameters,
     async execute(_toolCallId, _params) {
-      return { content: [{ type: "text", text: formatWorkpad(snapshot) }], details: {} as Record<string, never> };
+      return { content: [{ type: "text", text: formatWorkpad(snapshot, userDirective) }], details: {} as Record<string, never> };
     },
     renderResult(result, _options, _theme, _context) {
       const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");
@@ -480,9 +521,49 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("mini-self-org", {
-    description: "Show the current read-only session-local workpad.",
-    handler: async (_args, ctx) => {
-      ctx.ui.notify(formatWorkpad(snapshot), "info");
+    description: "Show the current session-local workpad (read-only). Subcommands: pin <text> / pin (prompts) / unpin.",
+    handler: async (args, ctx) => {
+      // Split on the FIRST whitespace run only: the remainder is the pin text, kept as-is
+      // (internal whitespace preserved; leading/trailing trim is applied by the command layer).
+      const trimmedArgs = args.trim();
+      const firstWhitespace = trimmedArgs.search(/\s/);
+      const subcommand = firstWhitespace === -1 ? trimmedArgs : trimmedArgs.slice(0, firstWhitespace);
+      const remainder = firstWhitespace === -1 ? "" : trimmedArgs.slice(firstWhitespace).trim();
+      switch (subcommand) {
+        case "":
+          ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
+          break;
+        case "pin": {
+          let text: string | undefined = remainder;
+          if (remainder.length === 0 && ctx.hasUI) {
+            text = (await ctx.ui.input("Pin a directive:", "A standing guardrail for this session"))?.trim();
+          }
+          if (text === undefined || text.length === 0) {
+            ctx.ui.notify(remainder.length === 0 && !ctx.hasUI ? "Usage: /mini-self-org pin <text> — argument required, no interactive UI available." : "Nothing to pin: provide non-empty text.", "error");
+            break;
+          }
+          if (text.length > MAX_USER_DIRECTIVE_LENGTH) {
+            ctx.ui.notify(`Pin rejected: directive exceeds the ${MAX_USER_DIRECTIVE_LENGTH}-character limit.`, "error");
+            break;
+          }
+          const timestamp = Date.now();
+          pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp });
+          userDirective = { text, timestamp };
+          if (anyPersistentTrigger()) forceNextAppend = true;
+          ctx.ui.notify(`User directive pinned: ${text}`, "info");
+          break;
+        }
+        case "unpin": {
+          const timestamp = Date.now();
+          pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text: null, timestamp });
+          userDirective = null;
+          if (anyPersistentTrigger()) forceNextAppend = true;
+          ctx.ui.notify("User directive unpinned.", "info");
+          break;
+        }
+        default:
+          ctx.ui.notify("Usage: /mini-self-org [pin <text> | pin | unpin]", "error");
+      }
     },
   });
   pi.registerCommand("mini-self-org-history", {
