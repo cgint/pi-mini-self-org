@@ -62,8 +62,8 @@ Snapshots are stored in Pi session tool-result details for active-branch recover
 ## Commands
 
 - `/mini-self-org` — read-only view of the current workpad (combined view if a directive is active).
-- `/mini-self-org-user-pin <text>` — set a **User-Pinned Directive** (max 300 chars). Pinned directives are human-owned, immutable to the agent, and injected into every workpad sheet alongside the agent's scratchpad. They survive agent `self-org-workpad-set` overwrites and clears. With no argument and interactive UI, opens a prompt.
-- `/mini-self-org-user-unpin` — clear the active directive.
+- `/mini-self-org-user-pin <text>` — set a **User-Pinned Directive** (max 300 chars). Pinned directives are human-owned, immutable to the agent, and injected into every workpad sheet alongside the agent's scratchpad. They survive agent `self-org-workpad-set` overwrites and clears. With no argument and interactive UI, opens a prompt. On success, shows the full combined workpad.
+- `/mini-self-org-user-unpin` — clear the active directive and show the resulting full combined workpad.
 - `/mini-self-org-history` — read-only view of the branch's focus history (past workpad snapshots).
 
 The directive does not create a new injection trigger: it rides the existing injection cadence. A successful pin or unpin forces one immediate re-injection on the next completed turn (persistent modes only; no-op in `never` mode).

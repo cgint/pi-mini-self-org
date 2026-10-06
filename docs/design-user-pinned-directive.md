@@ -145,16 +145,14 @@ Rationale: user-boundary means "at most one sheet per user interaction." If a di
 ## 4. User Interaction Model
 
 ### Commands
-Single command `/mini-self-org` with subcommand routing (no `/mini-self-org-pin` alias commands):
+Three discoverable commands, with directives separate from the read-only workpad view:
 
 | Invocation | Action |
 |---|---|
 | `/mini-self-org` | Displays the current combined workpad (User Directive + Agent Scratchpad) via `ctx.ui.notify`. Arguments are rejected with guidance to the directive commands. |
-| `/mini-self-org-user-pin <text>` | Sets or replaces the active User Directive. Text is trimmed; max **300 characters**; empty/whitespace-only is rejected with a "nothing to pin" notice (no entry written). Multiline text is preserved (after trim) but must not break the sheet's header layout. |
-| `/mini-self-org-user-pin` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input/edit the directive. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
-| `/mini-self-org-user-unpin` | Clears the active User Directive. Arguments are rejected. |
-
-Argument parsing: the raw command argument string is split on the first whitespace; first token is the subcommand (`pin` / `unpin` / empty), remainder is the text (for `pin`).
+| `/mini-self-org-user-pin <text>` | Sets or replaces the active User Directive, then displays the same full combined workpad view as `/mini-self-org`. Text is trimmed; max **300 characters**; empty/whitespace-only is rejected with a "nothing to pin" notice (no entry written). Multiline text is preserved (after trim) but must not break the sheet's header layout. |
+| `/mini-self-org-user-pin` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input/edit the directive, then displays the full combined workpad. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
+| `/mini-self-org-user-unpin` | Clears the active User Directive, then displays the resulting full combined workpad. Arguments are rejected. |
 
 ### Side effect: immediate re-injection
 On every successful `pin` or `unpin`, the extension sets `forceNextAppend = true` (when any persistent trigger is enabled; no-op in `never` mode) so the changed directive lands on the **next completed turn** — the agent must not wait up to `scheduledInterval` turns to learn about a guardrail it was just handed (or just had removed).
@@ -207,5 +205,5 @@ The agent's tool schema has no field for the directive, so no agent action can d
    - **User-boundary + directive + empty pad: boundary is CONSUMED** (sheet emitted, `pendingUserBoundary` cleared; next turn without a new boundary does not re-emit).
    - Pin/unpin arms `forceNextAppend` in persistent modes; no-op in `never` mode.
    - Command routing: `/mini-self-org` display, `pin <text>`, `pin` (hasUI prompt / no-UI usage error), `unpin`, unknown subcommand → usage help; 300-char limit + empty-text rejection.
-2. Implement user pin persistence, reconstruction, and command subcommand routing in `src/mini-self-org.ts` (update `formatWorkpad(snapshot, directive)` and the `turn_end` emission gate per §3.3).
+2. Implement user pin persistence, reconstruction, and the separate directive command registrations in `src/mini-self-org.ts` (update `formatWorkpad(snapshot, directive)` and the `turn_end` emission gate per §3.3).
 3. Update documentation in `README.md` (commands, directive semantics, injection behavior).

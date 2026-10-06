@@ -1407,6 +1407,18 @@ describe("miniSelfOrg", () => {
     await commands.get("mini-self-org-user-pin").handler("  line one\nline  two  ", ctx);
     expect(appendSpy).toHaveBeenCalledTimes(1);
     expect(appendSpy.mock.calls[0][1].text).toBe("line one\nline  two");
+    expect(notify).toHaveBeenCalledWith(formatWorkpad(emptySnapshot(), { text: "line one\nline  two", timestamp: expect.any(Number) }), "info");
+  });
+
+  it("pin and unpin show the combined view while preserving a non-empty agent scratchpad", async () => {
+    const { commands, tool } = setup();
+    await tool.execute("id", valid);
+    const notify = vi.fn();
+    const ctx = { ...commandCtx(), ui: { notify } };
+    await commands.get("mini-self-org-user-pin").handler("Keep v1 compatibility", ctx);
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] }, { text: "Keep v1 compatibility", timestamp: expect.any(Number) }), "info");
+    await commands.get("mini-self-org-user-unpin").handler("", ctx);
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] }), "info");
   });
 
   it("/mini-self-org-user-pin stores a directive and forces the next persistent injection", async () => {
@@ -1443,7 +1455,7 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[0][0]).toBe("Usage: /mini-self-org-user-unpin");
     await commands.get("mini-self-org-user-unpin").handler("", { ...commandCtx(), ui: { notify } });
     expect(appendSpy.mock.calls[0]).toEqual([USER_PIN_CUSTOM_TYPE, expect.objectContaining({ text: null })]);
-    expect(notify.mock.calls[1][0]).toContain("unpinned");
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad(emptySnapshot()), "info");
   });
 
   it("/mini-self-org remains view-only and directs legacy subcommands to the new commands", async () => {

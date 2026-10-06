@@ -549,7 +549,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp });
       userDirective = { text, timestamp };
       if (anyPersistentTrigger()) forceNextAppend = true;
-      ctx.ui.notify(`User directive pinned: ${text}`, "info");
+      ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
     },
   });
   pi.registerCommand("mini-self-org-user-unpin", {
@@ -563,7 +563,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text: null, timestamp });
       userDirective = null;
       if (anyPersistentTrigger()) forceNextAppend = true;
-      ctx.ui.notify("User directive unpinned.", "info");
+      ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
     },
   });
   pi.registerCommand("mini-self-org-history", {
