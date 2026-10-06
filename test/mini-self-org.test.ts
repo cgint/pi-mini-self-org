@@ -425,12 +425,13 @@ describe("miniSelfOrg", () => {
   });
 
   it("accepts only the supported injection policy configuration", () => {
-    // Accepted: never/off aliases, the two persistent modes, and the history-scheduled alias.
-    for (const value of [undefined, "", "never", "off", "scheduled:2", "scheduled:4", "user-boundary", "history-scheduled:8"]) {
+    // Accepted: never/off aliases, the two persistent modes, the history-scheduled alias,
+    // and the composite form (order-independent).
+    for (const value of [undefined, "", "never", "off", "scheduled:2", "scheduled:4", "user-boundary", "history-scheduled:8", "user-boundary+scheduled:3", "scheduled:3+user-boundary", "user-boundary+history-scheduled:3", "history-scheduled:3+user-boundary"]) {
       expect(() => setupWithInjection(value)).not.toThrow();
     }
-    // Rejected (hard throw): malformed values that are not a silent alias.
-    for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992", "other"]) {
+    // Rejected (hard throw): malformed values that are not a silent alias or valid composite.
+    for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992", "other", "never+user-boundary", "off+scheduled:2", "always+user-boundary", "user-boundary+user-boundary", "scheduled:2+scheduled:3", "scheduled:2+history-scheduled:3", "user-boundary+", "+scheduled:2", "+", "user-boundary +scheduled:2", "user-boundary+scheduled: ", "foo+user-boundary", "user-boundary+scheduled:", "user-boundary+scheduled:0", "user-boundary+scheduled:1.5", "user-boundary+scheduled:01"]) {
       expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
     }
     // 'always' is a warn + never fallback, NOT a hard throw (spec §1/§11-5).
@@ -981,4 +982,247 @@ describe("miniSelfOrg", () => {
     expect(r1.entries[0].content).toContain("turn 4)");
   });
 
+  // ── Composite mode: user-boundary+scheduled:N ──────────────────────────────
+
+  it("composite: user-boundary+scheduled:3 — boundary-only turn does NOT reset scheduled cadence", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // Arm the user boundary.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: boundary is due (pendingUserBoundary=true), scheduled counter=1 (not yet due).
+    // Pad has content → boundary-only sheet. Scheduled counter is NOT reset (stays at 1).
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: no new boundary (consumed), scheduled counter=2 (now due). Pad has content → scheduled sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+  });
+
+  it("composite: scheduled-only due turn emits one sheet and resets only its window", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // No before_agent_start → no boundary armed. Pure scheduled cadence.
+    // Turns 1, 2: no sheet. Turn 3: scheduled due.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+
+    // Window reset: turns 4, 5 no; turn 6 yes. This composite setup additionally proves the
+    // scheduled cadence resets on its own emission even though a user-boundary trigger is
+    // enabled (the atomic scheduled mode cannot be exercised this way).
+    expect(await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    const r6 = await turnEnd({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context());
+    expect(r6.entries).toHaveLength(1);
+    expect(r6.entries[0].content).toContain("Turn index: 6");
+  });
+
+  it("composite: simultaneous boundary+scheduled due emits exactly ONE sheet, resets cadence", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // Arm boundary. Turn 1: counter=1, boundary armed. Not scheduled due yet (1<2).
+    // Pad non-empty, boundary due → boundary-only sheet. Counter NOT reset (stays 1).
+    await handlers.get("before_agent_start")?.({}, context());
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: counter=2 (≥2, scheduled due), boundary consumed. Scheduled sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+
+    // Now arm boundary again. Turn 3: counter=1, boundary armed, not scheduled due.
+    // Boundary-only sheet (cadence NOT reset by boundary-only emission).
+    await handlers.get("before_agent_start")?.({}, context());
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+
+    // Turn 4: counter=2 (scheduled due), no boundary pending. Scheduled sheet, cadence reset.
+    const r4 = await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context());
+    expect(r4.entries).toHaveLength(1);
+    expect(r4.entries[0].content).toContain("Turn index: 4");
+  });
+
+  it("composite: simultaneous boundary+scheduled due coalesces to exactly ONE sheet (scheduled:1)", async () => {
+    // scheduled:1 makes the scheduled trigger due on EVERY completed turn, so arming the
+    // boundary guarantees a turn where BOTH triggers are simultaneously due.
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1 (≥1, scheduled due) AND boundary armed → both due → ONE coalesced sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Cadence reset: counter back to 0 → turn 2 counter=1, scheduled due again, no boundary → one sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+  });
+
+  it("composite: scheduled:1 + user-boundary — both always due, coalesces to exactly ONE sheet per turn", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1 (scheduled due), boundary armed → BOTH due. Exactly one sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: counter=1 again (reset to 0 on turn 1, now 1 ≥ 1 → due). No boundary (consumed, not re-armed).
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+  });
+
+  it("composite: empty pad + boundary only → no emit, boundary preserved; later non-empty turn emits", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+
+    // Arm boundary with empty pad.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: boundary due, pad empty → no emit. Boundary stays pending; the scheduled
+    // counter advances (1 of 3) despite the empty pad.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+
+    // Now populate the pad (within same agent loop, no re-arm).
+    await tool.execute("id", valid);
+
+    // Turn 2: boundary still pending, pad non-empty, scheduled counter=2 (not due) → deferred boundary sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+
+    // Turn 3: scheduled counter=3 → due; cadence was NOT reset by the turn-2 boundary sheet.
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+  });
+
+  it("composite: empty pad + simultaneous boundary+scheduled → one nudge, cadence reset, boundary preserved", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+
+    // Arm boundary. Pad is empty.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1, boundary due, scheduled not yet due. Empty pad → no emit.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+
+    // Turn 2: counter=2 (scheduled due), boundary still pending. Empty pad → nudge.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("the workpad is empty");
+
+    // Boundary was preserved (not cleared by the nudge). Populate the pad, complete the
+    // next turn: counter is now 1 (< 2) so scheduled is not due, but boundary is still
+    // pending and the pad has content → deferred boundary sheet emits.
+    await tool.execute("id", valid);
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+    expect(r3.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("composite: aborted/errored turn_end advances nothing", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Aborted: no counter advance, no boundary consumption.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    // Errored: same.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "error" }, context())).toBeFalsy();
+    // Completed: now counter=1, boundary still pending → boundary sheet.
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("composite: force (session_compact) with non-empty pad emits sheet; empty pad emits nudge + preserves boundary", async () => {
+    // Non-empty pad: force → state sheet.
+    const a = setupWithInjection("user-boundary+scheduled:5");
+    await a.tool.execute("id", valid);
+    await a.handlers.get("session_compact")?.({}, context());
+    const rA = await a.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(rA.entries).toHaveLength(1);
+    expect(rA.entries[0].content).not.toContain("the workpad is empty");
+
+    // Empty pad: force → nudge, boundary preserved.
+    const b = setupWithInjection("user-boundary+scheduled:5");
+    await b.handlers.get("before_agent_start")?.({}, context());
+    await b.handlers.get("session_compact")?.({}, context());
+    const rB = await b.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(rB.entries).toHaveLength(1);
+    expect(rB.entries[0].content).toContain("the workpad is empty");
+
+    // Boundary still pending: populate pad, next turn emits boundary sheet.
+    await b.tool.execute("id", valid);
+    const rB2 = await b.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(rB2.entries).toHaveLength(1);
+    expect(rB2.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("composite: reconstruct initializes sessionTurnCount from persisted sheets (Q3 marker continuity)", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // Force from reconstruct → first turn emits; counter should be 3 (2 persisted + 1).
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 3");
+  });
+
+  it("atomic user-boundary: reconstruct initializes sessionTurnCount from persisted sheets (marker fix)", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end")!;
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // forceNextAppend is set by reconstruct; first completed turn emits with counter=3.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 3");
+  });
+
+  it("composite: context hook remains strip-only", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const contextHandler = handlers.get("context")!;
+    await tool.execute("id", valid);
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    const user = { role: "user", content: "keep", timestamp: 1 };
+    expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+  });
 });

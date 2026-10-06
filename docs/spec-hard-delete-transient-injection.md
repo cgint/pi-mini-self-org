@@ -33,13 +33,12 @@ persistent append becomes the **sole** injection mechanism. The env var
 | Value | Behavior (post-change) |
 |---|---|
 | *(unset/empty)*, `never`, `off` | No injection. Tool-only access. |
-| `scheduled:N` | Persistent: append a `custom_message` sheet every N completed `turn_end` events. |
 | `user-boundary` | Persistent: append on the first completed turn after each user-submitted agent loop. |
-| `history-scheduled:N` | **Aliased** to `scheduled:N` (lossless rename — same mechanism, new name). No warning. |
+| `user-boundary+scheduled:<N>` | **Composite** (order-insensitive; `history-scheduled:<N>` accepted as the scheduled token too): enables **both** triggers. A sheet is appended on the first completed turn after each user loop **or** every `N` completed turns (or when forced), whichever fires first; a boundary-only sheet never resets the scheduled cadence. |
+| `scheduled:<N>` | Persistent: append a sheet every `N` completed `turn_end` events. |
+| `history-scheduled:<N>` | **Aliased** to `scheduled:<N>` (lossless rename — same mechanism, new name). No warning. |
 
-**Rejected at init:**
-- `always` — no persistent equivalent (per-call ≠ per-turn). **Warning + fallback to `never`** (not a hard throw — a hard throw kills the entire extension including tools on upgrade; fail-soft preserves tool access). The warning names the migration path: use `scheduled:1` for per-turn or `scheduled:N` for per-N-turns.
-- Any other non-empty value → hard throw (`MINI_SELF_ORG_INJECTION must be …`).
+**Rejected at init (hard throw):** composites mixing `never`/`off`/`always` with anything, duplicate triggers (`user-boundary+user-boundary`, `scheduled:2+scheduled:3`), missing tokens (`user-boundary+`, `+scheduled:2`, `+`), malformed intervals (`scheduled:0`, `scheduled:1.5`, `scheduled:`), whitespace, and unknown tokens. Standalone `always` remains the one fail-soft case: it **warns** and falls back to `never` (not a hard throw — a hard throw kills the entire extension including tools on upgrade; fail-soft preserves tool access); composites containing `always` **throw** because the intent is ambiguous.
 
 ## 2. What is deleted (code)
 
@@ -60,11 +59,11 @@ From `src/mini-self-org.ts`:
 
 - `turn_end` handler — the sole injection mechanism. Gated on:
   - `event.outcome === "completed"` (Q2)
-  - mode is `"scheduled"` or `"user-boundary"` (the two persistent modes)
-  - for `"scheduled"`: `turnsSinceLastAppend >= interval` (or `forceNextAppend`)
-  - for `"user-boundary"`: `pendingUserBoundary` is armed
-  - `hasContent(snapshot)`
-- `turnsSinceLastAppend`, `forceNextAppend`, `sessionTurnCount` — kept
+  - at least one persistent trigger enabled (`userBoundary` or `scheduledInterval` set)
+  - scheduled trigger due: `turnsSinceLastAppend >= scheduledInterval` (or `forceNextAppend`)
+  - boundary trigger due: `pendingUserBoundary` is armed
+  - coalescing: at most one sheet per turn; a boundary-only sheet never resets the scheduled cadence
+- `turnsSinceLastAppend`, `forceNextAppend`, `sessionTurnCount` — kept; `sessionTurnCount` initializes from persisted sheet count for **any** enabled persistent policy (fixes the atomic `user-boundary` marker gap)
 - `pendingUserBoundary` — kept, but now consumed by `turn_end` not `context`
 - `reconstructLastPersisted` / `reconstructSnapshot` / `reconstructHistory` — kept
 - `context` hook — **strip-only** (removes stale `WORKPAD_CUSTOM_TYPE` custom messages
@@ -74,87 +73,71 @@ From `src/mini-self-org.ts`:
 - Both commands (`/mini-self-org`, `/mini-self-org-history`) — kept
 - `session_compact` → `forceNextAppend = true` — kept (applies to both persistent modes)
 
-## 4. Internal mode label change
+## 4. Internal representation
 
-The internal mode label for the persistent append changes from `"history"` to
-`"scheduled"`. Rationale: `history-scheduled:N` is removed from the public env var
-grammar; `scheduled:N` is now the only persistent-cadence value. The label
-`"scheduled"` is shorter and matches the env var value. The `user-boundary` mode
-keeps its label `"user-boundary"`.
-
-The `InjectionPolicy` type becomes:
+The exclusive `InjectionPolicy` union is replaced by a normalized capability object:
 
 ```ts
-type InjectionPolicy =
-  | { mode: "never" }
-  | { mode: "user-boundary" }
-  | { mode: "scheduled"; interval: number };
+interface InjectionPolicy {
+  userBoundary: boolean;
+  scheduledInterval?: number;
+}
 ```
+
+Disabled injection is `{ userBoundary: false }`. The parser runs once at extension initialization; runtime handlers read this normalized object and never re-parse env text, and no runtime branch accommodates invalid config (invalid values are rejected at parse time). `history-scheduled:N` remains a silent alias of `scheduled:N`, usable both atomically and inside the composite `user-boundary+scheduled:N` (order-insensitive; `+` is the sole composite delimiter).
 
 ## 5. `turn_end` handler (post-change)
 
 ```ts
 pi.on("turn_end", (event) => {
   if (event.outcome !== "completed") return undefined;
-  if (injectionPolicy.mode === "never") return undefined;
-  // Q3 marker: increment unconditionally (all persistent modes), so every sheet
-  // carries a turn index regardless of mode. Cost: nil.
+  if (!injectionPolicy.userBoundary && injectionPolicy.scheduledInterval === undefined) return undefined;
+  // Q3 marker: increment whenever any persistent trigger is enabled, so every sheet
+  // carries a turn index regardless of the enabled combination.
   sessionTurnCount += 1;
-  if (!hasContent(snapshot)) return undefined;
-  // "Force survives until it can produce a sheet": hasContent check BEFORE force
-  // read/clear, so an empty workpad at compaction time does not lose the force.
-
-  if (injectionPolicy.mode === "user-boundary") {
-    if (!pendingUserBoundary && !forceNextAppend) return undefined;
+  if (injectionPolicy.scheduledInterval !== undefined) turnsSinceLastAppend += 1;
+  const boundaryDue = injectionPolicy.userBoundary && pendingUserBoundary;
+  const forceAppend = forceNextAppend;
+  const scheduledDue =
+    injectionPolicy.scheduledInterval !== undefined &&
+    (turnsSinceLastAppend >= injectionPolicy.scheduledInterval || forceAppend);
+  // Coalesce at most one sheet per turn; a boundary-only sheet never resets the
+  // scheduled cadence, so composition keeps both triggers' standalone meaning.
+  if (hasContent(snapshot) && (boundaryDue || scheduledDue || forceAppend)) {
     pendingUserBoundary = false;
     forceNextAppend = false;
-  } else {
-    // mode === "scheduled"
-    turnsSinceLastAppend += 1;
-    const forceAppend = forceNextAppend;
-    forceNextAppend = false;
-    if (!forceAppend && turnsSinceLastAppend < injectionPolicy.interval) return undefined;
-    turnsSinceLastAppend = 0;
+    if (scheduledDue) turnsSinceLastAppend = 0;
+    return { /* one state sheet */ };
   }
-
-  return {
-    entries: [{
-      type: "custom_message",
-      customType: WORKPAD_CUSTOM_TYPE,
-      content: historySheetBody(snapshot, sessionTurnCount),
-      display: false,
-      details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } },
-    }],
-  };
+  // Empty pad: a due scheduled window or force consumes a nudge sheet; a
+  // boundary-only due keeps the boundary (and force) pending.
+  if (scheduledDue) {
+    forceNextAppend = false;
+    turnsSinceLastAppend = 0;
+    return { /* one empty-workpad nudge sheet */ };
+  }
+  return undefined;
 });
 ```
 
 Notes:
-- `sessionTurnCount` is incremented **unconditionally** at handler entry (after the
-  outcome check), not per-branch. This ensures every sheet — scheduled or
-  user-boundary — carries a turn index (secondmate D1). The marker is diagnostic
-  only, not semantic.
-- `hasContent` is checked **before** force read/clear (secondmate Bug B). If the
-  workpad is empty, the force survives until a sheet can actually be produced.
-- In `user-boundary` mode, the gate is `pendingUserBoundary || forceNextAppend`
-  (secondmate D2/D3). Both flags are cleared on consumption. This unifies recovery
-  semantics: compaction, session start, and branch switch all set `forceNextAppend`,
-  which bypasses the user-boundary gate on the next completed turn.
-- Empty-snapshot turns still advance `turnsSinceLastAppend` (scheduled mode), so a
-  later-populated workpad appends immediately once ≥ N. This is deliberate:
-  "frequency governs when, content governs whether" (secondmate confirmation).
+- `sessionTurnCount` is incremented for **any** enabled persistent policy (composite-aware), not per-branch. This ensures every sheet — scheduled, user-boundary, or composite — carries a turn index (secondmate D1). The marker is diagnostic only, not semantic.
+- `hasContent` is checked **before** force read/clear (secondmate Bug B). If the workpad is empty, the force survives until a sheet can actually be produced.
+- `boundaryDue` requires the boundary to be armed (`pendingUserBoundary`); `scheduledDue` requires `scheduledInterval` set and either the counter threshold or `forceNextAppend`. A boundary-only sheet never resets the scheduled cadence; a scheduled or forced sheet does.
+- Empty-snapshot turns still advance `turnsSinceLastAppend` when scheduling is enabled, so a later-populated workpad appends immediately once ≥ N. This is deliberate: "frequency governs when, content governs whether" (secondmate confirmation).
+- A nudge (empty-pad scheduled/force emission) does NOT clear `pendingUserBoundary`, so a boundary can be deferred past an empty-pad turn.
 
 ## 6. `before_agent_start` (post-change)
 
 ```ts
 pi.on("before_agent_start", async () => {
-  if (injectionPolicy.mode === "user-boundary") {
+  if (injectionPolicy.userBoundary) {
     pendingUserBoundary = true;
   }
 });
 ```
 
-Only arms the flag in `user-boundary` mode. No-op in `scheduled` and `never` modes.
+Arms the flag whenever the `userBoundary` capability is enabled (atomic or composite). No-op when scheduling-only.
 
 ## 7. `context` hook (post-change)
 
@@ -175,17 +158,15 @@ Strip-only. No injection. No flags read or written.
 ```ts
 const reconstruct = (ctx: ExtensionContext) => {
   snapshot = reconstructSnapshot(ctx);
-  if (injectionPolicy.mode === "scheduled") {
+  if (injectionPolicy.scheduledInterval !== undefined) {
     turnsSinceLastAppend = 0;
+  }
+  if (injectionPolicy.userBoundary || injectionPolicy.scheduledInterval !== undefined) {
+    // Q3 marker: continue from persisted sheet count for any enabled persistent policy.
     sessionTurnCount = ctx.sessionManager.getBranch().filter((entry) => {
       const item = entry as { type?: string; customType?: string } | undefined;
       return item?.type === "custom_message" && item.customType === WORKPAD_CUSTOM_TYPE;
     }).length;
-  }
-  // D3: a resume/branch-switch is a boundary crossing. Set forceNextAppend so the
-  // first completed turn after resume appends a sheet (both persistent modes).
-  // Reproduces legacy semantics (old code set forceNextInjection=true in reconstruct).
-  if (injectionPolicy.mode === "scheduled" || injectionPolicy.mode === "user-boundary") {
     forceNextAppend = true;
   }
 };
@@ -196,18 +177,11 @@ pi.on("session_compact", async () => {
 });
 ```
 
-`session_compact` sets `forceNextAppend` unconditionally. `reconstruct` initializes
-the turn counter in `scheduled` mode and sets `forceNextAppend` for both persistent
-modes (D3: resume/branch-switch is a boundary crossing).
+`session_compact` sets `forceNextAppend` unconditionally. `reconstruct` resets the scheduled window when scheduling is enabled and initializes `sessionTurnCount` + sets `forceNextAppend` for **any** enabled persistent policy, atomic or composite (D3: resume/branch-switch is a boundary crossing).
 
 ## 9. Test changes
 
-- **T1 (policy parsing):** update the accepted/rejected lists. Accepted:
-  `undefined`, `""`, `never`, `off`, `scheduled:2`, `scheduled:4`, `user-boundary`,
-  `history-scheduled:8` (aliased to scheduled, not rejected). Rejected:
-  `always` (warn + never fallback, not hard throw), `Always`, ` user-boundary`,
-  `scheduled:0`, `scheduled:-1`, `scheduled:1.5`, `scheduled:01`,
-  `scheduled:9007199254740992`, `other`.
+- **T1 (policy parsing):** update the accepted/rejected lists. Accepted: `undefined`, `""`, `never`, `off`, `scheduled:2`, `scheduled:4`, `user-boundary`, `history-scheduled:8` (aliased to scheduled, not rejected), and the composites `user-boundary+scheduled:3` / `scheduled:3+user-boundary` (plus their `history-scheduled` spellings, order-insensitive). Rejected: `always` (warn + never fallback, not hard throw), `Always`, ` user-boundary`, `scheduled:0`, `scheduled:-1`, `scheduled:1.5`, `scheduled:01`, `scheduled:9007199254740992`, `other`, and all invalid composites: `never+user-boundary`, `off+scheduled:2`, `always+user-boundary`, `user-boundary+user-boundary`, `scheduled:2+scheduled:3`, `scheduled:2+history-scheduled:3`, `user-boundary+`, `+scheduled:2`, `+`, `user-boundary +scheduled:2`, `user-boundary+scheduled: `, `foo+user-boundary`, `user-boundary+scheduled:`. All composites must normalize identically: `{ userBoundary: true, scheduledInterval: N }`.
 - **T2–T10 (history-scheduled tests):** rename the mode from `"history"` to
   `"scheduled"` in all assertions. The `setupWithInjection("history-scheduled:3")`
   calls become `setupWithInjection("scheduled:3")`.
@@ -273,7 +247,18 @@ modes (D3: resume/branch-switch is a boundary crossing).
    A hard throw on a previously-valid value breaks the entire extension (tools
    gone) on upgrade — a different contract than fail-fast on malformed values.
    The warning names the migration path: use `scheduled:1` for per-turn or
-   `scheduled:N` for per-N-turns.
+   `scheduled:N` for per-N-turns. Composite values containing `always` (e.g.
+   `always+user-boundary`) are NOT fail-soft — they throw, because the intent is
+   ambiguous ("always" has no defined composite semantics).
+
+6. **Composite coalescing (single sheet per turn):** when boundary and scheduled
+   are both due on the same completed turn, emit exactly ONE state sheet and
+   reset the scheduled counter. A boundary-only sheet (boundary due, scheduled not
+   due) does NOT reset `turnsSinceLastAppend`, so the scheduled cadence retains its
+   standalone meaning — frequent user boundaries cannot starve the scheduled
+   trigger. An empty-pad nudge (scheduled/force due) clears force and resets the
+   counter but leaves `pendingUserBoundary` set, so a boundary can be deferred
+   until the pad is non-empty.
 
 ## 12. Commit plan
 

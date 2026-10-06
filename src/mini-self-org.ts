@@ -23,25 +23,33 @@ const RECALL_GUIDANCE = "The self-org-workpad-set workpad sheets are persisted i
 const HISTORY_USAGE_GUIDANCE = `Call self-org-workpad-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a self-org-workpad-set update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call self-org-workpad-set to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
-type InjectionPolicy =
-  | { mode: "never" }
-  | { mode: "user-boundary" }
-  | { mode: "scheduled"; interval: number };
+interface InjectionPolicy {
+  userBoundary: boolean;
+  scheduledInterval?: number;
+}
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
   if (value === "always") {
     console.warn("MINI_SELF_ORG_INJECTION=always is no longer supported: use scheduled:1 for per-turn or scheduled:N for per-N-turns. Falling back to never.");
-    return { mode: "never" };
+    return { userBoundary: false };
   }
-  if (value === undefined || value === "" || value === "never" || value === "off") return { mode: "never" };
-  if (value === "user-boundary") return { mode: "user-boundary" };
+  if (value === undefined || value === "" || value === "never" || value === "off") return { userBoundary: false };
+  // "a+b" is the composite form: "user-boundary" plus a scheduled interval (history-scheduled:<N>
+  // is a silent alias of scheduled:<N>, also usable as a composite token).
+  const compositeMatch =
+    /^user-boundary\+((?:history-)?scheduled):([1-9]\d*)$|^((?:history-)?scheduled):([1-9]\d*)\+user-boundary$/.exec(value);
+  if (compositeMatch) {
+    const interval = Number(compositeMatch[2] ?? compositeMatch[4]);
+    if (Number.isSafeInteger(interval)) return { userBoundary: true, scheduledInterval: interval };
+  }
+  if (value === "user-boundary") return { userBoundary: true };
   // history-scheduled:<N> is a silent alias for scheduled:<N> (lossless rename).
   const scheduledMatch = /^(?:scheduled|history-scheduled):([1-9]\d*)$/.exec(value);
   if (scheduledMatch) {
     const interval = Number(scheduledMatch[1]);
-    if (Number.isSafeInteger(interval)) return { mode: "scheduled", interval };
+    if (Number.isSafeInteger(interval)) return { userBoundary: false, scheduledInterval: interval };
   }
-  throw new Error("MINI_SELF_ORG_INJECTION must be never, off, user-boundary, scheduled:<N>, or history-scheduled:<N> (aliased to scheduled:<N>)");
+  throw new Error("MINI_SELF_ORG_INJECTION must be never, off, user-boundary, scheduled:<N>, history-scheduled:<N> (aliased to scheduled:<N>), or user-boundary+scheduled:<N> (order-independent)");
 }
 
 export interface WorkpadSnapshot {
@@ -331,12 +339,15 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let turnsSinceLastAppend = 0;
   let forceNextAppend = false;
   let sessionTurnCount = 0;
-  // Persistent user-boundary mode: armed by before_agent_start, consumed by turn_end.
+  // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
   let pendingUserBoundary = false;
+  const anyPersistentTrigger = () => injectionPolicy.userBoundary || injectionPolicy.scheduledInterval !== undefined;
   const reconstruct = (ctx: ExtensionContext) => {
     snapshot = reconstructSnapshot(ctx);
-    if (injectionPolicy.mode === "scheduled") {
+    if (injectionPolicy.scheduledInterval !== undefined) {
       turnsSinceLastAppend = 0;
+    }
+    if (anyPersistentTrigger()) {
       // Session-cumulative turn count (Q3 marker integrity): continue from the number of
       // persisted history sheets already in the branch, so multi-invocation sessions do not
       // restart the counter at 0.
@@ -344,18 +355,16 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         const item = entry as { type?: string; customType?: string } | undefined;
         return item?.type === "custom_message" && item.customType === WORKPAD_CUSTOM_TYPE;
       }).length;
-    }
-    // D3: a resume/branch-switch is a boundary crossing. Set forceNextAppend so the
-    // first completed turn after resume appends a sheet (both persistent modes).
-    // Reproduces legacy semantics (old code set forceNextInjection=true in reconstruct).
-    if (injectionPolicy.mode === "scheduled" || injectionPolicy.mode === "user-boundary") {
+      // D3: a resume/branch-switch is a boundary crossing. Set forceNextAppend so the
+      // first completed turn after resume appends a sheet (any persistent trigger).
+      // Reproduces legacy semantics (old code set forceNextInjection=true in reconstruct).
       forceNextAppend = true;
     }
   };
   pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
   pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
   pi.on("before_agent_start", async () => {
-    if (injectionPolicy.mode === "user-boundary") {
+    if (injectionPolicy.userBoundary) {
       pendingUserBoundary = true;
     }
   });
@@ -367,18 +376,27 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   // custom_message entry (R1 recall). Re-appends regardless of change; no `continue` (D2).
   pi.on("turn_end", (event) => {
     if (event.outcome !== "completed") return undefined;
-    if (injectionPolicy.mode === "never") return undefined;
-    // Q3 marker: increment unconditionally (all persistent modes), so every sheet
-    // carries a turn index regardless of mode. Cost: nil.
+    if (!injectionPolicy.userBoundary && injectionPolicy.scheduledInterval === undefined) return undefined;
+    // Q3 marker: increment whenever any persistent trigger is enabled, so every sheet
+    // carries a turn index regardless of the enabled combination. Cost: nil.
     sessionTurnCount += 1;
-
-    if (injectionPolicy.mode === "user-boundary") {
-      // "Force survives until it can produce a sheet": hasContent check BEFORE force
-      // read/clear, so an empty workpad does not lose the force.
-      if (!hasContent(snapshot)) return undefined;
-      if (!pendingUserBoundary && !forceNextAppend) return undefined;
+    // The scheduled window ticks on EVERY completed turn — including empty-workpad turns —
+    // so a later-populated pad appends on the normal cadence, and an empty pad gets a nudge
+    // sheet at the same boundary (LLM self-org nudge).
+    if (injectionPolicy.scheduledInterval !== undefined) {
+      turnsSinceLastAppend += 1;
+    }
+    const boundaryDue = injectionPolicy.userBoundary && pendingUserBoundary;
+    const forceAppend = forceNextAppend;
+    const scheduledDue =
+      injectionPolicy.scheduledInterval !== undefined &&
+      (turnsSinceLastAppend >= injectionPolicy.scheduledInterval || forceAppend);
+    // Coalesce at most one sheet per turn; a boundary-only sheet never resets the
+    // scheduled cadence, so composition keeps both triggers' standalone meaning.
+    if (hasContent(snapshot) && (boundaryDue || scheduledDue || forceAppend)) {
       pendingUserBoundary = false;
       forceNextAppend = false;
+      if (scheduledDue) turnsSinceLastAppend = 0;
       return {
         entries: [{
           type: "custom_message",
@@ -389,17 +407,11 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         }],
       };
     }
-
-    // mode === "scheduled": the window ticks on EVERY completed turn — including
-    // empty-workpad turns — so a later-populated pad appends on the normal cadence,
-    // and an empty pad gets a nudge sheet at the same boundary (LLM self-org nudge).
-    turnsSinceLastAppend += 1;
-    const forceAppend = forceNextAppend;
-    forceNextAppend = false;
-    if (!forceAppend && turnsSinceLastAppend < injectionPolicy.interval) return undefined;
-    turnsSinceLastAppend = 0;
-
-    if (!hasContent(snapshot)) {
+    // Empty pad: a due scheduled window or force consumes a nudge sheet; a boundary-only
+    // due keeps the boundary (and force) pending so a later non-empty turn can emit it.
+    if (scheduledDue) {
+      forceNextAppend = false;
+      turnsSinceLastAppend = 0;
       return {
         entries: [{
           type: "custom_message",
@@ -410,16 +422,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         }],
       };
     }
-
-    return {
-      entries: [{
-        type: "custom_message",
-        customType: WORKPAD_CUSTOM_TYPE,
-        content: historySheetBody(snapshot, sessionTurnCount),
-        display: false,
-        details: { snapshot: { ...snapshot, nextActions: [...snapshot.nextActions], blockers: [...snapshot.blockers], notes: [...snapshot.notes] } },
-      }],
-    };
+    return undefined;
   });
 
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
