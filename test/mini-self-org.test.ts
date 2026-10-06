@@ -1391,138 +1391,69 @@ describe("miniSelfOrg", () => {
     expect(r3.entries[0].details).toEqual({});
   });
 
-  // ── User-Pinned Directive: command routing (spec §4, §7) ─────────────────
+  // ── User-Pinned Directive: commands (spec §4, §7) ─────────────────────────
 
-  it("pin preserves internal whitespace in the text (split on first whitespace only)", async () => {
+  it("registers separate, discoverable user-pin and user-unpin commands", () => {
+    const { commands } = setup();
+    expect(commands.get("mini-self-org-user-pin").description).toContain("user-pinned directive");
+    expect(commands.get("mini-self-org-user-unpin").description).toContain("user-pinned directive");
+  });
+
+  it("/mini-self-org-user-pin preserves internal whitespace and multiline text after outer trim", async () => {
     const { pi, commands } = setup();
     const appendSpy = (pi as any).appendEntry;
     const notify = vi.fn();
     const ctx = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
-    await commands.get("mini-self-org").handler("pin keep  all", ctx);
+    await commands.get("mini-self-org-user-pin").handler("  line one\nline  two  ", ctx);
     expect(appendSpy).toHaveBeenCalledTimes(1);
-    expect(appendSpy.mock.calls[0][1].text).toBe("keep  all");
+    expect(appendSpy.mock.calls[0][1].text).toBe("line one\nline  two");
   });
 
-  it("pin preserves multiline text beyond outer trim; formatWorkpad renders it intact", async () => {
-    const { pi, commands } = setup();
-    const appendSpy = (pi as any).appendEntry;
-    const notify = vi.fn();
-    const ctx = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
-    await commands.get("mini-self-org").handler("pin  line one\nline two  ", ctx);
-    expect(appendSpy).toHaveBeenCalledTimes(1);
-    expect(appendSpy.mock.calls[0][1].text).toBe("line one\nline two");
-    const rendered = formatWorkpad(emptySnapshot(), { text: "line one\nline two", timestamp: 1 });
-    expect(rendered).toContain("[User directive] (set by user, immutable):\nline one\nline two\n\nOverall goal: [none]");
-  });
-
-  it("pin <text>: appends a pin entry, confirms, and in never mode turn_end stays silent", async () => {
-    const { pi, commands, handlers } = setup();
-    const appendSpy = (pi as any).appendEntry;
-    const notify = vi.fn();
-    const ctx = { ...commandCtx({ notify }), hasUI: false, ui: { notify } };
-    await commands.get("mini-self-org").handler("  pin   Never touch legacy DB tables  ", ctx);
-    expect(appendSpy).toHaveBeenCalledTimes(1);
-    expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
-    const data = appendSpy.mock.calls[0][1];
-    expect(data.text).toBe("Never touch legacy DB tables");
-    expect(typeof data.timestamp).toBe("number");
-    expect(notify.mock.calls[0][0]).toContain("pinned");
-    // never mode: forceNextAppend stays inert — turn_end emits nothing even with a directive.
-    const turnEnd = handlers.get("turn_end");
-    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
-  });
-
-  it("pin/unpin arm forceNextAppend in persistent mode: next completed turn emits immediately", async () => {
+  it("/mini-self-org-user-pin stores a directive and forces the next persistent injection", async () => {
     const { pi, commands, handlers } = setupWithInjection("scheduled:5");
     const appendSpy = (pi as any).appendEntry;
-    const turnEnd = handlers.get("turn_end")!;
     const notify = vi.fn();
-    await commands.get("mini-self-org").handler("pin Keep changes backwards-compatible", { ...commandCtx(), ui: { notify } });
-    expect(appendSpy).toHaveBeenCalledTimes(1);
-    // scheduled:5 with no pad content, but forceNextAppend set → first completed turn emits the unified sheet.
-    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
-    expect(r1.entries).toHaveLength(1);
-    expect((r1.entries[0].content as string)).toContain("Keep changes backwards-compatible");
-    // Force consumed: turn 2 counter=1 < 5 → nothing (even with directive active).
-    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    await commands.get("mini-self-org-user-pin").handler("Never touch legacy DB tables", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+    expect(appendSpy.mock.calls[0][1].text).toBe("Never touch legacy DB tables");
+    const result = await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(result.entries[0].content).toContain("Never touch legacy DB tables");
   });
 
-  it("pin (no text) with hasUI=true: opens input prompt and pins the entered text", async () => {
+  it("/mini-self-org-user-pin prompts interactively and rejects missing or oversized text", async () => {
     const { pi, commands } = setup();
     const appendSpy = (pi as any).appendEntry;
     const input = vi.fn().mockResolvedValue("  From the prompt  ");
     const notify = vi.fn();
-    await commands.get("mini-self-org").handler("pin", { hasUI: true, ui: { input, notify }, sessionManager: { getBranch: () => [] } });
-    expect(input).toHaveBeenCalledTimes(1);
-    expect(appendSpy).toHaveBeenCalledTimes(1);
+    await commands.get("mini-self-org-user-pin").handler("", { hasUI: true, ui: { input, notify }, sessionManager: { getBranch: () => [] } });
     expect(appendSpy.mock.calls[0][1].text).toBe("From the prompt");
-    expect(notify.mock.calls[0][0]).toContain("pinned");
+    await commands.get("mini-self-org-user-pin").handler("", { ...commandCtx({ notify }), hasUI: false });
+    expect(notify.mock.calls[1][0]).toContain("argument required, no interactive UI available");
+    await commands.get("mini-self-org-user-pin").handler("x".repeat(301), { ...commandCtx({ notify }), hasUI: false });
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[2][0]).toContain("300");
   });
 
-  it("pin (no text) with hasUI=false: usage error, no entry written", async () => {
+  it("/mini-self-org-user-unpin clears the directive and rejects arguments", async () => {
     const { pi, commands } = setup();
     const appendSpy = (pi as any).appendEntry;
     const notify = vi.fn();
-    await commands.get("mini-self-org").handler("pin", { ...commandCtx({ notify }), hasUI: false });
+    await commands.get("mini-self-org-user-unpin").handler("unexpected", { ...commandCtx(), ui: { notify } });
     expect(appendSpy).not.toHaveBeenCalled();
-    expect(notify.mock.calls[0][0]).toContain("argument required, no interactive UI available");
-    expect(notify.mock.calls[0][1]).toBe("error");
+    expect(notify.mock.calls[0][0]).toBe("Usage: /mini-self-org-user-unpin");
+    await commands.get("mini-self-org-user-unpin").handler("", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy.mock.calls[0]).toEqual([USER_PIN_CUSTOM_TYPE, expect.objectContaining({ text: null })]);
+    expect(notify.mock.calls[1][0]).toContain("unpinned");
   });
 
-  it("pin rejects empty/whitespace-only and >300-char text without writing entries", async () => {
-    const { pi, commands } = setup();
-    const appendSpy = (pi as any).appendEntry;
-    const notify = vi.fn();
-    const ctx = { hasUI: true, ui: { notify, input: vi.fn().mockResolvedValue("  ") }, sessionManager: { getBranch: () => [] } };
-    // Whitespace-only input from prompt → "Nothing to pin"
-    await commands.get("mini-self-org").handler("pin", ctx);
-    expect(appendSpy).not.toHaveBeenCalled();
-    expect(notify.mock.calls[0][0]).toContain("Nothing to pin");
-    // >300 chars via direct argument
-    const ctx2 = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
-    await commands.get("mini-self-org").handler(`pin ${"x".repeat(301)}`, ctx2);
-    expect(appendSpy).not.toHaveBeenCalled();
-    expect(notify.mock.calls[1][0]).toContain("300");
-  });
-
-  it("/mini-self-org unpin: appends null-text entry and clears the directive", async () => {
-    const { pi, handlers, commands } = setupWithInjection("scheduled:1");
-    const appendSpy = (pi as any).appendEntry;
-    const turnEnd = handlers.get("turn_end")!;
-    // Pin first.
-    const notify = vi.fn();
-    await commands.get("mini-self-org").handler("pin Old guardrail", { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } });
-    expect(appendSpy.mock.calls[0][1].text).toBe("Old guardrail");
-    // forceNextAppend armed → unified sheet carries the directive.
-    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
-    expect(r1.entries).toHaveLength(1);
-    expect(r1.entries[0].content).toContain("[USER DIRECTIVE]");
-    const notify2 = vi.fn();
-    await commands.get("mini-self-org").handler("unpin", { hasUI: false, ui: { notify: notify2 }, sessionManager: { getBranch: () => [] } });
-    expect(appendSpy).toHaveBeenCalledTimes(2);
-    expect(appendSpy.mock.calls[1][0]).toBe(USER_PIN_CUSTOM_TYPE);
-    expect(appendSpy.mock.calls[1][1].text).toBeNull();
-    expect(notify2.mock.calls[0][0]).toContain("unpinned");
-    // scheduled:1 is due again, but the in-memory directive is cleared and the pad is empty → nudge, not a directive sheet.
-    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
-    expect(r2.entries).toHaveLength(1);
-    expect(r2.entries[0].content).not.toContain("[USER DIRECTIVE]");
-    expect(r2.entries[0].content).toContain("the workpad is empty");
-    // Reconstruction confirms the cleared state from the branch.
-    expect(reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null)]))).toBeNull();
-  });
-
-  it("unknown subcommand → usage help listing pin and unpin; display without directive matches legacy format", async () => {
+  it("/mini-self-org remains view-only and directs legacy subcommands to the new commands", async () => {
     const { commands } = setup();
     const notify = vi.fn();
-    await commands.get("mini-self-org").handler("bogus", { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } });
-    const usage = notify.mock.calls[0][0] as string;
-    expect(usage.toLowerCase()).toContain("pin");
-    expect(usage.toLowerCase()).toContain("unpin");
-    // Display: no directive → legacy exact format.
-    const notify2 = vi.fn();
-    await commands.get("mini-self-org").handler("", { hasUI: false, ui: { notify: notify2 }, sessionManager: { getBranch: () => [] } });
-    expect(notify2.mock.calls[0][0]).toBe(formatWorkpad(emptySnapshot()));
+    await commands.get("mini-self-org").handler("pin Old guardrail", { ...commandCtx(), ui: { notify } });
+    expect(notify.mock.calls[0][0]).toContain("/mini-self-org-user-pin");
+    const view = vi.fn();
+    await commands.get("mini-self-org").handler("", { ...commandCtx(), ui: { notify: view } });
+    expect(view.mock.calls[0][0]).toBe(formatWorkpad(emptySnapshot()));
   });
 
   it("composite: context hook remains strip-only", async () => {

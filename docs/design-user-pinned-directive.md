@@ -26,7 +26,7 @@ Allow the user to establish a **User-Pinned Directive** in the workpad that:
 │                   Combined Workpad                     │
 ├────────────────────────────────────────────────────────┤
 │  [USER DIRECTIVE] (Human-owned, Authoritative)         │
-│  • Pinned via /mini-self-org pin <text>                │
+│  • Pinned via /mini-self-org-user-pin <text>           │
 │  • Stored in session entries (mini-self-org-user-pin)  │
 │  • IMMUTABLE to agent                                  │
 ├────────────────────────────────────────────────────────┤
@@ -149,11 +149,10 @@ Single command `/mini-self-org` with subcommand routing (no `/mini-self-org-pin`
 
 | Invocation | Action |
 |---|---|
-| `/mini-self-org` | Displays the current combined workpad (User Directive + Agent Scratchpad) via `ctx.ui.notify`. |
-| `/mini-self-org pin <text>` | Sets or replaces the active User Directive. Text is trimmed; max **300 characters**; empty/whitespace-only is rejected with a "nothing to pin" notice (no entry written). Multiline text is preserved (after trim) but must not break the sheet's header layout. |
-| `/mini-self-org pin` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input/edit the directive. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
-| `/mini-self-org unpin` | Clears the active User Directive. |
-| `/mini-self-org <unknown>` | Notify usage help listing the subcommands. |
+| `/mini-self-org` | Displays the current combined workpad (User Directive + Agent Scratchpad) via `ctx.ui.notify`. Arguments are rejected with guidance to the directive commands. |
+| `/mini-self-org-user-pin <text>` | Sets or replaces the active User Directive. Text is trimmed; max **300 characters**; empty/whitespace-only is rejected with a "nothing to pin" notice (no entry written). Multiline text is preserved (after trim) but must not break the sheet's header layout. |
+| `/mini-self-org-user-pin` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input/edit the directive. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
+| `/mini-self-org-user-unpin` | Clears the active User Directive. Arguments are rejected. |
 
 Argument parsing: the raw command argument string is split on the first whitespace; first token is the subcommand (`pin` / `unpin` / empty), remainder is the text (for `pin`).
 
@@ -165,7 +164,7 @@ On every successful `pin` or `unpin`, the extension sets `forceNextAppend = true
 ## 5. Session Persistence and Branch Reconstruction
 
 ### 5.1 Storage Mechanism
-When the user runs `/mini-self-org pin <text>` or `/mini-self-org unpin`:
+When the user runs `/mini-self-org-user-pin <text>` or `/mini-self-org-user-unpin`:
 * The extension calls `pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text: string | null, timestamp: Date.now() })` (`text: null` for unpin).
 * This appends a lightweight `CustomEntry` into Pi's session branch tree, excluded from model context.
 * See §2.3 for the exact entry shape.

@@ -521,49 +521,49 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("mini-self-org", {
-    description: "Show the current session-local workpad (read-only). Subcommands: pin <text> / pin (prompts) / unpin.",
+    description: "Show the current read-only session-local workpad.",
     handler: async (args, ctx) => {
-      // Split on the FIRST whitespace run only: the remainder is the pin text, kept as-is
-      // (internal whitespace preserved; leading/trailing trim is applied by the command layer).
-      const trimmedArgs = args.trim();
-      const firstWhitespace = trimmedArgs.search(/\s/);
-      const subcommand = firstWhitespace === -1 ? trimmedArgs : trimmedArgs.slice(0, firstWhitespace);
-      const remainder = firstWhitespace === -1 ? "" : trimmedArgs.slice(firstWhitespace).trim();
-      switch (subcommand) {
-        case "":
-          ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
-          break;
-        case "pin": {
-          let text: string | undefined = remainder;
-          if (remainder.length === 0 && ctx.hasUI) {
-            text = (await ctx.ui.input("Pin a directive:", "A standing guardrail for this session"))?.trim();
-          }
-          if (text === undefined || text.length === 0) {
-            ctx.ui.notify(remainder.length === 0 && !ctx.hasUI ? "Usage: /mini-self-org pin <text> — argument required, no interactive UI available." : "Nothing to pin: provide non-empty text.", "error");
-            break;
-          }
-          if (text.length > MAX_USER_DIRECTIVE_LENGTH) {
-            ctx.ui.notify(`Pin rejected: directive exceeds the ${MAX_USER_DIRECTIVE_LENGTH}-character limit.`, "error");
-            break;
-          }
-          const timestamp = Date.now();
-          pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp });
-          userDirective = { text, timestamp };
-          if (anyPersistentTrigger()) forceNextAppend = true;
-          ctx.ui.notify(`User directive pinned: ${text}`, "info");
-          break;
-        }
-        case "unpin": {
-          const timestamp = Date.now();
-          pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text: null, timestamp });
-          userDirective = null;
-          if (anyPersistentTrigger()) forceNextAppend = true;
-          ctx.ui.notify("User directive unpinned.", "info");
-          break;
-        }
-        default:
-          ctx.ui.notify("Usage: /mini-self-org [pin <text> | pin | unpin]", "error");
+      if (args.trim().length > 0) {
+        ctx.ui.notify("Usage: /mini-self-org — use /mini-self-org-user-pin <text> or /mini-self-org-user-unpin for directives.", "error");
+        return;
       }
+      ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
+    },
+  });
+  pi.registerCommand("mini-self-org-user-pin", {
+    description: "Set or replace the user-pinned directive for this session.",
+    handler: async (args, ctx) => {
+      let text: string | undefined = args.trim();
+      if (text.length === 0 && ctx.hasUI) {
+        text = (await ctx.ui.input("Pin a directive:", "A standing guardrail for this session"))?.trim();
+      }
+      if (text === undefined || text.length === 0) {
+        ctx.ui.notify(args.trim().length === 0 && !ctx.hasUI ? "Usage: /mini-self-org-user-pin <text> — argument required, no interactive UI available." : "Nothing to pin: provide non-empty text.", "error");
+        return;
+      }
+      if (text.length > MAX_USER_DIRECTIVE_LENGTH) {
+        ctx.ui.notify(`Pin rejected: directive exceeds the ${MAX_USER_DIRECTIVE_LENGTH}-character limit.`, "error");
+        return;
+      }
+      const timestamp = Date.now();
+      pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp });
+      userDirective = { text, timestamp };
+      if (anyPersistentTrigger()) forceNextAppend = true;
+      ctx.ui.notify(`User directive pinned: ${text}`, "info");
+    },
+  });
+  pi.registerCommand("mini-self-org-user-unpin", {
+    description: "Clear the user-pinned directive for this session.",
+    handler: async (args, ctx) => {
+      if (args.trim().length > 0) {
+        ctx.ui.notify("Usage: /mini-self-org-user-unpin", "error");
+        return;
+      }
+      const timestamp = Date.now();
+      pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text: null, timestamp });
+      userDirective = null;
+      if (anyPersistentTrigger()) forceNextAppend = true;
+      ctx.ui.notify("User directive unpinned.", "info");
     },
   });
   pi.registerCommand("mini-self-org-history", {
