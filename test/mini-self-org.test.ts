@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, reconstructUserDirective, sanitizeSnapshot, USER_PIN_CUSTOM_TYPE, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, INJECTION_GUARDRAIL_DELIMITER, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, reconstructUserDirective, sanitizeSnapshot, USER_GUARDRAIL_DELIMITER, USER_PIN_CUSTOM_TYPE, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "self-org-workpad-set";
 const HISTORICAL_TOOL_NAME = "mini-self-org-workpad";
@@ -1229,7 +1229,7 @@ describe("miniSelfOrg", () => {
     const notify = vi.fn();
     await commands.get("mini-self-org").handler("", { ui: { notify } });
     const output = notify.mock.calls[0][0] as string;
-    expect(output).toContain("[User directive] (set by user, immutable)");
+    expect(output).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
     expect(output).toContain("Never touch legacy DB tables");
   });
 
@@ -1277,11 +1277,21 @@ describe("miniSelfOrg", () => {
     const directive = { text: "Backwards-compat with v1.", timestamp: 1 };
     const clean = { overallGoal: "Ship", currentFocus: "Focus", nextActions: ["A"], blockers: [], notes: [] };
     expect(formatWorkpad(clean, directive)).toBe(
-      "Mini self-org workpad\n[User directive] (set by user, immutable):\nBackwards-compat with v1.\n\n[Agent scratchpad]\nOverall goal: Ship\nCurrent focus: Focus\nNext actions:\n- A\nBlockers: [none]\nNotes: [none]"
+      "Mini self-org workpad\n\n" +
+      "────────────────────────────────────────────────────────────\n" +
+      "USER STANDING GUARDRAIL (Human-owned, non-negotiable):\n" +
+      "  Backwards-compat with v1.\n" +
+      "────────────────────────────────────────────────────────────\n\n" +
+      "[Agent scratchpad]\nOverall goal: Ship\nCurrent focus: Focus\nNext actions:\n- A\nBlockers: [none]\nNotes: [none]"
     );
     // Empty pad + directive: directive block without [Agent scratchpad] header.
     expect(formatWorkpad(emptySnapshot(), directive)).toBe(
-      "Mini self-org workpad\n[User directive] (set by user, immutable):\nBackwards-compat with v1.\n\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]"
+      "Mini self-org workpad\n\n" +
+      "────────────────────────────────────────────────────────────\n" +
+      "USER STANDING GUARDRAIL (Human-owned, non-negotiable):\n" +
+      "  Backwards-compat with v1.\n" +
+      "────────────────────────────────────────────────────────────\n\n" +
+      "Overall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]"
     );
   });
 
@@ -1294,7 +1304,7 @@ describe("miniSelfOrg", () => {
     await handlers.get("session_start")?.({}, branch);
     const result = await get.execute("id", {});
     const text = result.content[0].text as string;
-    expect(text).toContain("[User directive] (set by user, immutable)");
+    expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
     expect(text).toContain("Never touch legacy DB tables");
   });
 
@@ -1313,7 +1323,7 @@ describe("miniSelfOrg", () => {
     // Agent fully clears the snapshot — directive remains.
     await tool.execute("id", emptySnapshot());
     text = (await get.execute("id", {})).content[0].text as string;
-    expect(text).toContain("[User directive] (set by user, immutable)");
+    expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
     expect(text).toContain("Keep guardrails on");
   });
 
@@ -1329,7 +1339,8 @@ describe("miniSelfOrg", () => {
     expect(r1.entries).toHaveLength(1);
     const content = r1.entries[0].content as string;
     expect(content).toContain("Mini self-org workpad — history checkpoint (turn 1)");
-    expect(content).toContain("[USER DIRECTIVE] (Authoritative, set by human user — immutable)");
+    expect(content).toContain("STANDING USER GUARDRAIL (Human-owned, supreme invariant):");
+    expect(content).toContain("Operational rule: Supreme invariant. Precedes and bounds all goals");
     expect(content).toContain("Backwards-compat with v1.");
     expect(content).toContain("[AGENT WORKING STATE]");
     expect(content).toContain("Overall goal: Ship");
@@ -1347,7 +1358,7 @@ describe("miniSelfOrg", () => {
     const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(r1.entries).toHaveLength(1);
     const content = r1.entries[0].content as string;
-    expect(content).toContain("[USER DIRECTIVE]");
+    expect(content).toContain("STANDING USER GUARDRAIL");
     expect(content).toContain("The agent's scratchpad is currently empty.");
     expect(content).not.toContain("the workpad is empty");
     expect(r1.entries[0].details).toEqual({});
@@ -1369,7 +1380,7 @@ describe("miniSelfOrg", () => {
     // First completed turn: boundary due, directive active, pad empty → unified sheet, boundary consumed.
     const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(r1.entries).toHaveLength(1);
-    expect((r1.entries[0].content as string)).toContain("[USER DIRECTIVE]");
+    expect((r1.entries[0].content as string)).toContain("STANDING USER GUARDRAIL");
     // Second completed turn in same loop: boundary consumed, nothing due → no emit (no per-turn spam).
     expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
     // Re-arm: boundary due again → emit again.
@@ -1389,6 +1400,56 @@ describe("miniSelfOrg", () => {
     expect(r3.entries).toHaveLength(1);
     expect((r3.entries[0].content as string)).toContain("the workpad is empty");
     expect(r3.entries[0].details).toEqual({});
+  });
+
+  // ── User-Pinned Guardrail: Emphasis & Semantic Acceptance Criteria (spec) ──
+
+  it("REQ-1 & AC-1: sentence-case input without ALL CAPS renders with clear visual boundaries and indentation", () => {
+    const rendered = formatWorkpad(emptySnapshot(), { text: "keep all changes backwards compatible", timestamp: 1 });
+    expect(rendered).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
+    expect(rendered).toContain("  keep all changes backwards compatible");
+    expect(rendered).toContain(USER_GUARDRAIL_DELIMITER);
+  });
+
+  it("REQ-2: does not contain emoji icons (📌, ⚠️) in formatWorkpad or prompt injection", async () => {
+    const directive = { text: "stay on main branch", timestamp: 1 };
+    const rendered = formatWorkpad(emptySnapshot(), directive);
+    expect(rendered).not.toContain("📌");
+    expect(rendered).not.toContain("⚠️");
+
+    const { handlers } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("stay on main branch")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const sheetContent = result.entries[0].content as string;
+    expect(sheetContent).not.toContain("📌");
+    expect(sheetContent).not.toContain("⚠️");
+  });
+
+  it("REQ-2 & AC-4: delimiters are bounded to <= 60 characters for viewport resilience", () => {
+    expect(USER_GUARDRAIL_DELIMITER.length).toBeLessThanOrEqual(60);
+    expect(INJECTION_GUARDRAIL_DELIMITER.length).toBeLessThanOrEqual(60);
+    expect(USER_GUARDRAIL_DELIMITER).toBe("────────────────────────────────────────────────────────────");
+    expect(INJECTION_GUARDRAIL_DELIMITER).toBe("════════════════════════════════════════════════════════════");
+  });
+
+  it("REQ-3 & AC-2: prompt injection explicitly conveys supreme precedence and silent adherence", async () => {
+    const { handlers } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("do not touch legacy tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const sheetContent = result.entries[0].content as string;
+    expect(sheetContent).toContain("STANDING USER GUARDRAIL (Human-owned, supreme invariant):");
+    expect(sheetContent).toContain("Operational rule: Supreme invariant. Precedes and bounds all goals, plans, and actions below. Never violate or negotiate this. Adhere silently without acknowledging or restating it.");
+  });
+
+  it("AC-3: when no directive is pinned, no empty boxes, delimiters, or guardrail placeholders appear", () => {
+    const rendered = formatWorkpad(emptySnapshot(), null);
+    expect(rendered).not.toContain("GUARDRAIL");
+    expect(rendered).not.toContain(USER_GUARDRAIL_DELIMITER);
+    expect(rendered).toBe("Mini self-org workpad\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]");
   });
 
   // ── User-Pinned Directive: commands (spec §4, §7) ─────────────────────────
