@@ -1551,4 +1551,133 @@ describe("miniSelfOrg", () => {
     expect(forced.entries[0].content).toContain("checkpoint (turn 1, post-compaction): the workpad is empty.");
     expect(forced.entries[0].content).toContain("Context was recently compacted. Review or set your steering state, or inspect past focus via self-org-workpad-history.");
   });
+
+  // ── pin-submit command (20261021-user-pin-submit) ──────────────────────────
+
+  describe("mini-self-org-user-pin-submit", () => {
+    it("idle: pins directive and sends user message with expandPromptTemplates: false", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      const ctx = { hasUI: false, isIdle: () => true, ui: { notify }, sessionManager: { getBranch: () => [] } };
+
+      await commands.get("mini-self-org-user-pin-submit").handler("Do not touch the DB schema", ctx);
+
+      // Persistence
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Do not touch the DB schema");
+      expect(typeof appendSpy.mock.calls[0][1].timestamp).toBe("number");
+
+      // Display: combined workpad with directive
+      const notifyArg = notify.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("[User directive] (set by user, immutable)");
+      expect(notifyArg).toContain("Do not touch the DB schema");
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Immediate turn trigger: idle → direct send, no deliverAs
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Do not touch the DB schema", { expandPromptTemplates: false });
+    });
+
+    it("busy: pins directive and queues message with deliverAs: followUp", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      const ctx = { hasUI: false, isIdle: () => false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+
+      await commands.get("mini-self-org-user-pin-submit").handler("Maintain v1 API compatibility", ctx);
+
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Maintain v1 API compatibility");
+
+      const notifyArg = notify.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("Maintain v1 API compatibility");
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Busy → followUp delivery
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Maintain v1 API compatibility", { deliverAs: "followUp", expandPromptTemplates: false });
+    });
+
+    it("validation: empty/whitespace rejected; >300 chars rejected; no persistence, no message", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+      // Empty / whitespace
+      const notifyEmpty = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("   ", { ...commandCtx({ notify: notifyEmpty }), hasUI: false });
+      expect(appendSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(notifyEmpty.mock.calls[0][0]).toContain("argument required");
+      expect(notifyEmpty.mock.calls[0][1]).toBe("error");
+
+      // Oversize
+      const notifyLong = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("a".repeat(301), { ...commandCtx({ notify: notifyLong }), hasUI: false });
+      expect(appendSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(notifyLong.mock.calls[0][0]).toContain("300");
+      expect(notifyLong.mock.calls[0][1]).toBe("error");
+    });
+
+    it("interactive: no args + hasUI prompts input, then pins and sends; no args + !hasUI notifies usage error", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+      // hasUI = true: interactive prompt
+      const input = vi.fn().mockResolvedValue("  Use strict TypeScript  ");
+      const notifyUi = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("", { hasUI: true, isIdle: () => true, ui: { input, notify: notifyUi }, sessionManager: { getBranch: () => [] } });
+
+      expect(input).toHaveBeenCalledTimes(1);
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Use strict TypeScript");
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Use strict TypeScript", { expandPromptTemplates: false });
+      const notifyArg = notifyUi.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("Use strict TypeScript");
+
+      // hasUI = false: usage error, no persistence, no message
+      const notifyNoUi = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("", { hasUI: false, ui: { notify: notifyNoUi }, sessionManager: { getBranch: () => [] } });
+
+      expect(appendSpy).toHaveBeenCalledTimes(1); // still just 1 from the first call
+      expect(sendSpy).toHaveBeenCalledTimes(1);  // still just 1
+      expect(notifyNoUi.mock.calls[0][0]).toContain("argument required");
+      expect(notifyNoUi.mock.calls[0][1]).toBe("error");
+    });
+
+    it("arms forceNextAppend in persistent trigger modes so next turn_end emits the sheet", async () => {
+      const { pi, commands, handlers } = setupWithInjection("scheduled:1");
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("Guardrail text", { ...commandCtx({ ui: { notify } }), isIdle: () => true });
+
+      // forceNextAppend is armed → the next completed turn_end must emit a sheet
+      // containing the newly-pinned directive.
+      const result = await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].content).toContain("Guardrail text");
+
+      // In never mode, forceNextAppend is a no-op: turn_end never appends.
+      const neverSetup = setupWithInjection("never");
+      (neverSetup.pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notifyNever = vi.fn();
+      await neverSetup.commands.get("mini-self-org-user-pin-submit").handler("Guardrail text", {
+        ...commandCtx(),
+        ui: { notify: notifyNever },
+        isIdle: () => true,
+      });
+      expect((neverSetup.pi as any).appendEntry).toHaveBeenCalledTimes(1);
+      expect(notifyNever.mock.calls[0][0]).toContain("Guardrail text");
+      // turn_end in never mode: no injection, no entries.
+      expect(await neverSetup.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
+    });
+  });
 });
