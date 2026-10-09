@@ -1,133 +1,129 @@
 # 3 · Plan: user-pin-submit
 
-## Technical Architecture & Integration Points
+> This plan has two parts. **Part A (Implemented baseline)** describes what is
+> already shipped. **Part B (Pending: turn-1 guardrail bridge)** is the
+> remaining work. The two are distinct — do not read them as contradictory
+> alternatives; B is the delta on top of A.
 
-All changes are in `src/mini-self-org.ts`. The `pin-submit` command reuses the
+## Part A — Implemented baseline
+
+All changes in `src/mini-self-org.ts`. The `pin-submit` command reuses the
 existing pin persistence path and adds a `pi.sendUserMessage` call after
 persistence.
 
-### 1. Command Registration
-
-Register the new command alongside the existing `pin` / `unpin` handlers:
+### A.1 Command Registration
 
 ```
 /mini-self-org-user-pin-submit [text]
 ```
 
 - Extract `text` from arguments (same parsing as `pin`).
-- Route to the shared `handlePinSubmit(text | null, ctx, pi)` function.
+- No argument + `ctx.hasUI` → interactive prompt (`ctx.ui.input`); on cancel, return.
+- No argument + `!ctx.hasUI` → notify usage error, return.
 
-### 2. Shared `handlePinSubmit` Logic
+### A.2 Shared handler logic
 
 ```
 handlePinSubmit(rawText, ctx, pi):
   1. If rawText is null:
        if ctx.hasUI:
-         text = await ctx.ui.input("Pin directive:", ...)
-         if text is null → return (user cancelled)
+         text = await ctx.ui.input("Pin directive:", …); on null → return
        else:
-         ctx.ui.notify("Usage: /mini-self-org-user-pin-submit <text> (no interactive UI)")
-         return
+         ctx.ui.notify("Usage: /mini-self-org-user-pin-submit <text> (no interactive UI)"); return
   2. text = rawText?.trim() ?? ""
   3. if text is empty → notify "nothing to pin", return
   4. if text.length > 300 → notify length error, return
   5. pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp: Date.now() })
-  6. forceNextAppend = true
-  7. ctx.ui.notify(combineWorkpad(display))  // show directive + scratchpad
+  6. userDirective = { text, timestamp }; forceNextAppend = true
+  7. ctx.ui.notify(combineWorkpad(display))
   8. If ctx.isIdle():
        pi.sendUserMessage(text, { expandPromptTemplates: false })
      Else:
-       pi.sendUserMessage(text, { deliverAs: "followUp" })
+       pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false })
 ```
 
-Key points:
-- Steps 1–7 are identical to the existing `pin` handler (can be refactored into
-  a shared helper if the `pin` handler is updated too).
+- Steps 1–7 mirror the existing `pin` handler (shared/identical logic).
 - Step 8 is the **only new logic** — the idle/busy routing.
-- `expandPromptTemplates: false` ensures the directive text is sent verbatim,
-  not interpreted as a prompt template.
-- `deliverAs: "followUp"` queues the message after the in-flight turn when the
-  session is busy, preventing a race.
+- `expandPromptTemplates: false` → text sent verbatim, not re-dispatched as a command/template.
+- `deliverAs: "followUp"` (busy) queues after the in-flight turn, avoiding the SDK throw for a bare streaming submit.
 
-### 3. `forceNextAppend` Arming
-
-- Set `forceNextAppend = true` after successful persistence (same as `pin`).
-- No-op in `never` mode (existing guard applies).
-- This ensures the next `turn_end` emits the unified sheet including the
-  newly-pinned directive.
-
-### 4. No Changes to
+### A.3 No changes to
 
 - `WorkpadSnapshot` / `WorkpadParameters` — agent tool schema unchanged.
 - `reconstructUserDirective` — pin-submit writes the same entry type.
 - `formatWorkpad` — combined display is the same as `pin`.
-- Emission gate logic in `turn_end` — no new trigger type; `forceNextAppend`
-  already covered.
+- `turn_end` emission gate — no new trigger type; `forceNextAppend` already covered.
 
-## Test Plan
+## Part B — Pending: turn-1 guardrail-framing bridge
 
-Tests go in `test/mini-self-org.test.ts`. The 5 test cases for `pin-submit`:
+Goal: make the directive's *standing-invariant status* visible on the submitted
+turn (turn 1), not just from turn 2 (when the `turn_end` sheet is appended).
 
-### 1. Idle → `sendUserMessage` with `expandPromptTemplates: false`
+### B.1 Mechanism
 
-- Mock `ctx.isIdle()` → `true`.
-- Call `handlePinSubmit("Do not touch the DB schema", ctx, pi)`.
-- Assert:
-  - `pi.appendEntry` called with `USER_PIN_CUSTOM_TYPE` and correct data.
-  - `pi.sendUserMessage` called with `("Do not touch the DB schema", { expandPromptTemplates: false })`.
-  - `ctx.ui.notify` called with combined workpad containing the directive.
+Inject the directive's supreme-invariant framing into the LLM context of the
+turn that pin-submit starts. Use a `display: false` message with a customType
+**distinct** from `WORKPAD_CUSTOM_TYPE` (the context strip filter removes only
+`WORKPAD_CUSTOM_TYPE`; a distinct type keeps the transient directive visible to
+the LLM and non-persisted). Two viable carriers (dev team's choice):
 
-### 2. Busy → `sendUserMessage` with `deliverAs: "followUp"`
+- `before_agent_start` returning `{ message: { … } }` (non-persisted, in-memory), **or**
+- `pi.sendMessage(…, { deliverAs: "nextTurn" })`.
 
-- Mock `ctx.isIdle()` → `false`.
-- Call `handlePinSubmit("Maintain v1 API compatibility", ctx, pi)`.
-- Assert:
-  - `pi.appendEntry` called correctly.
-  - `pi.sendUserMessage` called with `("Maintain v1 API compatibility", { deliverAs: "followUp" })`.
-  - `ctx.ui.notify` called with combined workpad.
+### B.2 Disarm timing (correctness constraint)
 
-### 3. Validation Error Handling
+The bridge fires for **exactly one agent turn** (the submitted turn). Disarm it
+**on the next turn boundary**, *not* coupled to "a sheet was appended" — in
+`never`-injection-policy mode no sheet is ever appended, so a
+sheet-append-only disarm never fires and the bridge re-injects every turn.
 
-- **Empty text:** `handlePinSubmit("   ", ctx, pi)` →
-  - `pi.appendEntry` **not** called.
-  - `pi.sendUserMessage` **not** called.
-  - `ctx.ui.notify` called with "nothing to pin" message.
-- **Oversize text (> 300 chars):** `handlePinSubmit("a".repeat(301), ctx, pi)` →
-  - `pi.appendEntry` **not** called.
-  - `pi.sendUserMessage` **not** called.
-  - `ctx.ui.notify` called with length error message.
+### B.3 Shared invariant text
 
-### 4. Interactive UI Fallback
+Extract the supreme-invariant directive block so `historySheetBody` (turn 2+
+sheet) and the turn-1 bridge share the same builder. Do not duplicate the
+string — turn 1 and turn 2 must show the LLM the *same* framing.
 
-- **`hasUI = true`, no argument:**
-  - Mock `ctx.ui.input` to return `"Use strict TypeScript"`.
-  - Call `handlePinSubmit(null, ctx, pi)`.
-  - Assert: `ctx.ui.input` called, then `pi.appendEntry` + `pi.sendUserMessage`
-    called with the prompted text.
-- **`hasUI = false`, no argument:**
-  - Call `handlePinSubmit(null, ctx, pi)`.
-  - Assert: `pi.appendEntry` **not** called, `pi.sendUserMessage` **not**
-    called, `ctx.ui.notify` called with usage error.
+### B.4 Guidelines (informational, not mandatory)
 
-### 5. `forceNextAppend` Arming
+The dev team owns the implementation. Worth knowing, not prescriptive:
 
-- Call `handlePinSubmit("Guardrail text", ctx, pi)`.
-- Assert: after the call, the internal state has `forceNextAppend === true`.
-- (In `never` mode: assert `forceNextAppend` remains unchanged / no effect.)
-- This ensures the next `turn_end` will emit the unified sheet with the
-  newly-pinned directive.
+- **Single-source the pin logic.** Keep the 300-char cap and pin commit shared
+  between `pin` and `pin-submit` so they can't drift. How (helper, duplication,
+  …) is up to the team.
+- **Disarm on the next turn, not on sheet-append** (see B.2).
+- **Don't duplicate the supreme-invariant text** (see B.3).
+- **The bridge's customType should differ from `WORKPAD_CUSTOM_TYPE`** (see B.1).
 
-## Documentation Updates
+## Test coverage plan (`test/mini-self-org.test.ts`)
 
-Update `README.md` to include:
+**Part A (implemented — already covered):**
+- Idle → `sendUserMessage(text, { expandPromptTemplates: false })`; `appendEntry` + `forceNextAppend` armed.
+- Busy → `sendUserMessage(text, { deliverAs: "followUp" })`.
+- Empty / whitespace → no `appendEntry`, no `sendUserMessage`, notify.
+- >300 chars → no `appendEntry`, no `sendUserMessage`, notify.
+- No-arg + `hasUI` → `ui.input` called, then persist + submit.
+- No-arg + `!hasUI` → no `appendEntry`, no `sendUserMessage`, usage notify.
 
-- **Command reference:** Add `/mini-self-org-user-pin-submit` to the commands
-  table with its syntax, arguments, and behaviour.
-- **Passive vs. Active pin:** Add a short section or table contrasting
-  `pin` (passive, no turn trigger) vs `pin-submit` (active, immediate turn).
-- **Directive semantics:** Note that `pin-submit` sets the directive and
-  immediately triggers a turn; the agent acts on the directive from that turn
-  onward.
-- **Injection behaviour:** Note that `pin-submit` arms `forceNextAppend` the
-  same way as `pin`/`unpin`, so the unified sheet is emitted on the next
-  completed turn.
+**Part B (pending — to add):**
+- Turn-1 bridge: the submitted turn's LLM context includes the directive framed
+  as the standing guardrail; content matches the shared `historySheetBody`
+  block.
+- Turn-2 disarm: after the submitted turn completes, the bridge is **not**
+  re-injected on the next agent turn — including under `never`-injection-policy.
+  This regression catches a sheet-append-only disarm.
+- Reconstruction: a pin-submit entry is read by `reconstructUserDirective` like
+  any pin (newest wins).
+- Regression: existing pin/unpin/display/history command tests still pass.
+
+## Risks / mitigations (Part B)
+
+- **Duplicate directive block on turn 2** — disarm on the next turn (not
+  sheet-append). Regression test asserts no re-emission on turn 2 and under
+  `never`-policy.
+- **`never`-policy infinite re-fire** — no sheet is appended in `never` mode;
+  turn-based disarm avoids it (see B.2).
+- **Context strip filter collision** — distinct customType keeps the transient
+  directive visible and non-persisted (see B.1).
+- **Framing drift turn 1 vs turn 2** — shared invariant-text builder (see B.3).
+- **Shared-logic refactor** — keep the existing `pin` handler behavior
+  byte-identical; regression tests guard it.

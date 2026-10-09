@@ -39,7 +39,40 @@ The directive and the triggering prompt are one atomic user action:
 Both write the identical `mini-self-org-user-pin` session entry. They differ
 only in what happens *after* persistence.
 
-## Sources
-- Exploration: completed design discussion (2026-10-19).
-- Design: `docs/design-user-pinned-directive.md` §4 (Passive vs. Active).
-- Feasibility: confirmed `pi.sendUserMessage` supports both `expandPromptTemplates: false` (idle) and `deliverAs: "followUp"` (busy).
+## The turn-1 guardrail-framing gap (open design concern)
+
+"Submitting the text as the user message" delivers the *text*, but **not** the
+*standing-invariant status*. The pinned-as-supreme-guardrail state only enters
+the LLM context at the `turn_end`-emitted sheet — *after* the agent already
+replied to the submitted text. So on turn 1 the LLM sees the raw text as an
+ordinary user request, **not** framed as the supreme invariant. The invariant
+framing takes effect from turn 2 onward.
+
+**This is the part of the feature that is *not* yet implemented.** The
+currently-shipped `pin-submit` closes the "submit now" half (the text reaches
+the LLM on turn 1) but leaves the "it is a standing guardrail *from turn 1*"
+half blind. Closing it requires a turn-1 transient-directive bridge: inject the
+directive's supreme-invariant framing into the LLM context of the submitted
+turn, then disarm on the next turn boundary. See `3_plan__user-pin-submit.md`
+(Pending section) for the constraints (turn-boundary disarm, `never`-policy
+regression, shared invariant text, distinct customType).
+
+## SDK facts (verified in `agent-session.js` / `types.d.ts`)
+
+| Fact | Evidence |
+|---|---|
+| `sendUserMessage` → `prompt()` with `source: "extension"` | `agent-session.js:1812` |
+| Streaming + no `deliverAs` → **throws** | `agent-session.js:1522` |
+| `before_agent_start` returned message is non-persisted (in-memory only) | `agent-session.js:1583-1594` |
+| `_throwIfExtensionCommand` guard only in `_queueUserInput`, not `prompt()` | `agent-session.js:1656` |
+| focus-guard `--dm-read` does not block user messages | verified |
+
+## Implementation status
+
+- ✅ **Implemented:** pin + submit, idle → direct send / busy → `followUp`, validation (trim / empty / ≤300), interactive `ui.input` fallback, `forceNextAppend` arming.
+- ❌ **Pending:** turn-1 guardrail-framing bridge (`before_agent_start` transient injection + turn-boundary disarm).
+
+## Out of scope
+
+- Modifying existing `/mini-self-org-user-pin` behavior.
+- A new persistent customType for the pin (reuses `USER_PIN_CUSTOM_TYPE`; the pending turn-1 bridge uses a *separate, non-persisted* customType).
