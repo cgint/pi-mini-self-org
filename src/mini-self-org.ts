@@ -683,6 +683,33 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
     },
   });
+  pi.registerCommand("mini-self-org-user-pin-submit", {
+    description: "Set the user-pinned directive AND immediately submit it as a user message to trigger an agent turn.",
+    handler: async (args, ctx) => {
+      let text: string | undefined = args.trim();
+      if (text.length === 0 && ctx.hasUI) {
+        text = (await ctx.ui.input("Pin & submit directive:", "A standing guardrail — will be submitted immediately"))?.trim();
+      }
+      if (text === undefined || text.length === 0) {
+        ctx.ui.notify(args.trim().length === 0 && !ctx.hasUI ? "Usage: /mini-self-org-user-pin-submit <text> — argument required, no interactive UI available." : "Nothing to pin: provide non-empty text.", "error");
+        return;
+      }
+      if (text.length > MAX_USER_DIRECTIVE_LENGTH) {
+        ctx.ui.notify(`Pin rejected: directive exceeds the ${MAX_USER_DIRECTIVE_LENGTH}-character limit.`, "error");
+        return;
+      }
+      const timestamp = Date.now();
+      pi.appendEntry(USER_PIN_CUSTOM_TYPE, { text, timestamp });
+      userDirective = { text, timestamp };
+      if (anyPersistentTrigger()) forceNextAppend = true;
+      ctx.ui.notify(formatWorkpad(snapshot, userDirective), "info");
+      if (ctx.isIdle()) {
+        await pi.sendUserMessage(text, { expandPromptTemplates: false });
+      } else {
+        await pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false });
+      }
+    },
+  });
   pi.registerCommand("mini-self-org-user-unpin", {
     description: "Clear the user-pinned directive for this session.",
     handler: async (args, ctx) => {

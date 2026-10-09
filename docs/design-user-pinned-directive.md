@@ -152,7 +152,20 @@ Three discoverable commands, with directives separate from the read-only workpad
 | `/mini-self-org` | Displays the current combined workpad (User Directive + Agent Scratchpad) via `ctx.ui.notify`. Arguments are rejected with guidance to the directive commands. |
 | `/mini-self-org-user-pin <text>` | Sets or replaces the active User Directive, then displays the same full combined workpad view as `/mini-self-org`. Text is trimmed; max **300 characters**; empty/whitespace-only is rejected with a "nothing to pin" notice (no entry written). Multiline text is preserved (after trim) but must not break the sheet's header layout. |
 | `/mini-self-org-user-pin` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input/edit the directive, then displays the full combined workpad. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
+| `/mini-self-org-user-pin-submit <text>` | Sets or replaces the active User Directive (same validation as `pin`: trimmed, max **300 characters**, empty/whitespace-only rejected), persists it via a `mini-self-org-user-pin` session entry, sets `forceNextAppend = true`, displays the combined workpad, and **immediately triggers an agent turn** by calling `pi.sendUserMessage(text, { expandPromptTemplates: false })` when the session is idle, or `pi.sendUserMessage(text, { deliverAs: "followUp" })` when `!ctx.isIdle()` (streaming/busy). |
+| `/mini-self-org-user-pin-submit` (no text) | If `ctx.hasUI`, opens an interactive prompt (`ctx.ui.input`) to input the directive, then performs the same persist + display + immediate-turn-trigger flow as `pin-submit <text>`. If `!ctx.hasUI` (JSON/print modes): notify a usage error ("argument required, no interactive UI available") and do nothing. |
 | `/mini-self-org-user-unpin` | Clears the active User Directive, then displays the resulting full combined workpad. Arguments are rejected. |
+
+### Passive vs. Active Directives: `pin` vs. `pin-submit`
+Both commands write the identical `mini-self-org-user-pin` session entry and produce the same persistent, immutable directive. They differ only in what happens *after* persistence:
+
+| | `/mini-self-org-user-pin` (passive) | `/mini-self-org-user-pin-submit` (active) |
+|---|---|---|
+| Intended use | Standing constraint for **future** turns; user is mid-conversation or just setting policy. | Standing constraint that should **immediately** drive the agent's next action (e.g., "never touch the DB schema" + "now fix the migration bug"). |
+| Turn triggering | None. The directive takes effect on the next naturally-emitted sheet (`forceNextAppend` arms it for the next turn that ends). | Immediate. `pi.sendUserMessage` fires the submitted text as a user-role message right after persistence, so the agent acts on the new directive without waiting for another user prompt. |
+| Busy/session state | Not relevant (no message is sent). | Idle → `pi.sendUserMessage(text, { expandPromptTemplates: false })`; busy/streaming (`!ctx.isIdle()`) → `pi.sendUserMessage(text, { deliverAs: "followUp" })` so the message queues after the in-flight turn instead of racing it. |
+
+The two are complementary: `pin` is "remind the agent of this constraint going forward"; `pin-submit` is "adopt this constraint *and* start working on it now."
 
 ### Side effect: immediate re-injection
 On every successful `pin` or `unpin`, the extension sets `forceNextAppend = true` (when any persistent trigger is enabled; no-op in `never` mode) so the changed directive lands on the **next completed turn** — the agent must not wait up to `scheduledInterval` turns to learn about a guardrail it was just handed (or just had removed).
@@ -205,5 +218,10 @@ The agent's tool schema has no field for the directive, so no agent action can d
    - **User-boundary + directive + empty pad: boundary is CONSUMED** (sheet emitted, `pendingUserBoundary` cleared; next turn without a new boundary does not re-emit).
    - Pin/unpin arms `forceNextAppend` in persistent modes; no-op in `never` mode.
    - Command routing: `/mini-self-org` display, `pin <text>`, `pin` (hasUI prompt / no-UI usage error), `unpin`, unknown subcommand → usage help; 300-char limit + empty-text rejection.
-2. Implement user pin persistence, reconstruction, and the separate directive command registrations in `src/mini-self-org.ts` (update `formatWorkpad(snapshot, directive)` and the `turn_end` emission gate per §3.3).
-3. Update documentation in `README.md` (commands, directive semantics, injection behavior).
+   - **`pin-submit` persistence + immediate turn trigger (idle):** `pin-submit <text>` appends the `mini-self-org-user-pin` entry and calls `pi.sendUserMessage(text, { expandPromptTemplates: false })` when the session is idle.
+   - **`pin-submit` delivery routing when busy/streaming:** when `!ctx.isIdle()`, the submit uses `pi.sendUserMessage(text, { deliverAs: "followUp" })` instead of sending directly.
+   - **`pin-submit` validation:** empty/whitespace-only text and text > 300 characters (after trim) are rejected with a usage error; no entry is written and no turn is triggered.
+   - **`pin-submit` interactive fallback:** with no argument and `ctx.hasUI`, `ctx.ui.input` prompt collects the text, then persists + triggers the turn exactly like the argument form; with `!ctx.hasUI`, a usage error is notified and nothing is written or sent.
+   - **`pin-submit` arms `forceNextAppend`** so the subsequent turn's `turn_end` emits the unified sheet including the newly-pinned directive (consistent with `pin`/`unpin` arming behavior in persistent modes).
+2. Implement user pin persistence, reconstruction, and the separate directive command registrations in `src/mini-self-org.ts` (update `formatWorkpad(snapshot, directive)` and the `turn_end` emission gate per §3.3). `pin-submit` reuses the pin persistence path, then routes through `pi.sendUserMessage` per the idle/busy check in §4.
+3. Update documentation in `README.md` (commands, directive semantics, passive vs. active pin behavior, injection behavior).

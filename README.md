@@ -62,7 +62,8 @@ Snapshots are stored in Pi session tool-result details for active-branch recover
 ## Commands
 
 - `/mini-self-org` — read-only view of the current workpad (combined view showing the user standing guardrail first when active).
-- `/mini-self-org-user-pin <text>` — set a **User-Pinned Standing Guardrail** (max 300 chars). Guardrails are human-owned, immutable to the agent, rendered within a high-contrast typographic boundary, and injected into prompt checkpoints with supreme operational precedence over agent goals and actions. They survive agent `self-org-workpad-set` overwrites and clears. With no argument and interactive UI, opens a prompt. On success, shows the full combined workpad.
+- `/mini-self-org-user-pin <text>` — set a **User-Pinned Standing Guardrail** (max 300 chars). Guardrails are human-owned, immutable to the agent, rendered within a high-contrast typographic boundary, and injected into prompt checkpoints with supreme operational precedence over agent goals and actions. They survive agent `self-org-workpad-set` overwrites and clears. With no argument and interactive UI, opens a prompt. On success, shows the full combined workpad. Passive: takes effect on the next naturally-emitted sheet, does not trigger a turn.
+- `/mini-self-org-user-pin-submit <text>` — same as `user-pin` but **active**: after persisting the directive, immediately triggers an agent turn by submitting the directive text as a user-role message. Idle sessions get a direct send (`expandPromptTemplates: false`); busy/streaming sessions queue it as a `followUp`. Use this when the directive should drive the agent's next action immediately rather than waiting for the next sheet.
 - `/mini-self-org-user-unpin` — clear the active guardrail and show the resulting full combined workpad.
 - `/mini-self-org-history` — read-only view of the branch's focus history (past workpad snapshots).
 
