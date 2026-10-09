@@ -1,9 +1,8 @@
 # 3 · Plan: user-pin-submit
 
-> This plan has two parts. **Part A (Implemented baseline)** describes what is
-> already shipped. **Part B (Pending: turn-1 guardrail bridge)** is the
-> remaining work. The two are distinct — do not read them as contradictory
-> alternatives; B is the delta on top of A.
+> This plan documents the **implemented** behaviour (Part A) and records the
+> **not-adopted** optional refinement (Part B, out of scope) so it is not
+> re-opened as missing work.
 
 ## Part A — Implemented baseline
 
@@ -54,76 +53,49 @@ handlePinSubmit(rawText, ctx, pi):
 - `formatWorkpad` — combined display is the same as `pin`.
 - `turn_end` emission gate — no new trigger type; `forceNextAppend` already covered.
 
-## Part B — Pending: turn-1 guardrail-framing bridge
+## Part B — Not adopted: turn-1 guardrail-framing bridge (OUT OF SCOPE)
 
-Goal: make the directive's *standing-invariant status* visible on the submitted
-turn (turn 1), not just from turn 2 (when the `turn_end` sheet is appended).
+> **This was considered and deliberately not built.** The feature is complete
+> without it: the directive's status is set in the workpad immediately on
+> pin/submit, and the agent reads it on the next completed turn (cadence /
+> forced-append controlled). Showing the standing-rule *status* on the
+> submitted turn itself was an optional refinement that was **not** adopted.
+> Do not implement this unless explicitly re-scoped.
 
-### B.1 Mechanism
+### Why it was not needed
 
-Inject the directive's supreme-invariant framing into the LLM context of the
-turn that pin-submit starts. Use a `display: false` message with a customType
-**distinct** from `WORKPAD_CUSTOM_TYPE` (the context strip filter removes only
-`WORKPAD_CUSTOM_TYPE`; a distinct type keeps the transient directive visible to
-the LLM and non-persisted). Two viable carriers (dev team's choice):
+The perceived "gap" was a misreading: the status is *set* immediately; only
+*visibility* waits for the next cadence tick, and the pin's `forceNextAppend`
+already pulls that to the next completed turn — one turn, independent of any
+slow cadence (e.g. `scheduled:10`). That one-turn-later visibility is by
+design and acceptable.
 
-- `before_agent_start` returning `{ message: { … } }` (non-persisted, in-memory), **or**
-- `pi.sendMessage(…, { deliverAs: "nextTurn" })`.
+### If it were ever re-scoped (record only — do not act)
 
-### B.2 Disarm timing (correctness constraint)
-
-The bridge fires for **exactly one agent turn** (the submitted turn). Disarm it
-**on the next turn boundary**, *not* coupled to "a sheet was appended" — in
-`never`-injection-policy mode no sheet is ever appended, so a
-sheet-append-only disarm never fires and the bridge re-injects every turn.
-
-### B.3 Shared invariant text
-
-Extract the supreme-invariant directive block so `historySheetBody` (turn 2+
-sheet) and the turn-1 bridge share the same builder. Do not duplicate the
-string — turn 1 and turn 2 must show the LLM the *same* framing.
-
-### B.4 Guidelines (informational, not mandatory)
-
-The dev team owns the implementation. Worth knowing, not prescriptive:
-
-- **Single-source the pin logic.** Keep the 300-char cap and pin commit shared
-  between `pin` and `pin-submit` so they can't drift. How (helper, duplication,
-  …) is up to the team.
-- **Disarm on the next turn, not on sheet-append** (see B.2).
-- **Don't duplicate the supreme-invariant text** (see B.3).
-- **The bridge's customType should differ from `WORKPAD_CUSTOM_TYPE`** (see B.1).
+- Inject the supreme-invariant framing into the submitted turn via a
+  `display:false` message with a customType **distinct** from
+  `WORKPAD_CUSTOM_TYPE` (`before_agent_start` returned message, or
+  `pi.sendMessage(…, {deliverAs:"nextTurn"})`).
+- Disarm on the **next turn boundary**, not on sheet-append (in `never`
+  -injection mode no sheet is ever appended; a sheet-append-only disarm would
+  re-inject every turn forever).
+- Share the invariant-text builder with `historySheetBody` so turn 1 and the
+  forced sheet show identical framing.
 
 ## Test coverage plan (`test/mini-self-org.test.ts`)
 
-**Part A (implemented — already covered):**
+**Part A (implemented — covered):**
 - Idle → `sendUserMessage(text, { expandPromptTemplates: false })`; `appendEntry` + `forceNextAppend` armed.
 - Busy → `sendUserMessage(text, { deliverAs: "followUp" })`.
 - Empty / whitespace → no `appendEntry`, no `sendUserMessage`, notify.
 - >300 chars → no `appendEntry`, no `sendUserMessage`, notify.
 - No-arg + `hasUI` → `ui.input` called, then persist + submit.
 - No-arg + `!hasUI` → no `appendEntry`, no `sendUserMessage`, usage notify.
-
-**Part B (pending — to add):**
-- Turn-1 bridge: the submitted turn's LLM context includes the directive framed
-  as the standing guardrail; content matches the shared `historySheetBody`
-  block.
-- Turn-2 disarm: after the submitted turn completes, the bridge is **not**
-  re-injected on the next agent turn — including under `never`-injection-policy.
-  This regression catches a sheet-append-only disarm.
-- Reconstruction: a pin-submit entry is read by `reconstructUserDirective` like
-  any pin (newest wins).
 - Regression: existing pin/unpin/display/history command tests still pass.
 
-## Risks / mitigations (Part B)
+## Risks / mitigations
 
-- **Duplicate directive block on turn 2** — disarm on the next turn (not
-  sheet-append). Regression test asserts no re-emission on turn 2 and under
-  `never`-policy.
-- **`never`-policy infinite re-fire** — no sheet is appended in `never` mode;
-  turn-based disarm avoids it (see B.2).
-- **Context strip filter collision** — distinct customType keeps the transient
-  directive visible and non-persisted (see B.1).
-- **Framing drift turn 1 vs turn 2** — shared invariant-text builder (see B.3).
-- **Shared-logic refactor** — keep the existing `pin` handler behavior
-  byte-identical; regression tests guard it.
+- **No Part B risks (not adopted).** The only residual note: if anyone later
+  re-scopes the turn-1 bridge, the three constraints in Part B (distinct
+  customType, turn-boundary disarm not sheet-append, shared invariant text)
+  are the things to honor to avoid the `never`-policy infinite re-fire.

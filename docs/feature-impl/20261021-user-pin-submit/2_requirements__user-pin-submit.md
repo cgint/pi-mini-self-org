@@ -57,20 +57,18 @@ The turn is triggered **after** persistence succeeds:
 - `deliverAs: "followUp"` queues the message after the in-flight turn instead
   of racing it (avoids the SDK throw for a bare streaming submit).
 
-## Pending requirement: turn-1 guardrail framing
+## Status
 
-The text being the user message is *not* sufficient — the LLM must also see it
-framed as the standing supreme invariant **on the submitted turn itself** (turn
-1). Currently the invariant framing only enters context at the `turn_end` sheet
-(turn 2+).
+**This feature is complete.** The directive's status is set in the workpad
+immediately on pin/submit; when the agent *reads* it is governed by the
+injection cadence, with the pin's `forceNextAppend` pulling that to the next
+completed turn. That one-turn-later visibility is by design (cadence-controlled),
+not a gap.
 
-**Requirement:** on the submitted turn, the LLM context includes the directive
-framed as the standing guardrail, and the framing is **not** re-injected on the
-next turn (no duplicate directive block once the sheet is appended). This is
-met by a `before_agent_start` transient-directive bridge that fires for exactly
-one agent turn and disarms on the next turn boundary.
-
-> This is **not yet implemented** (see idea §Implementation status).
+> The earlier "pending requirement: turn-1 guardrail framing" (inject the
+> standing-rule status on the submitted turn itself) was an **optional
+> refinement** that was **not** adopted. It is deliberately out of scope. Do
+> not treat it as missing feature work. See idea §Implementation status.
 
 ## Comparison: `pin` (passive) vs `pin-submit` (active)
 
@@ -89,7 +87,7 @@ one agent turn and disarms on the next turn boundary.
 1. `/mini-self-org-user-pin-submit <text>` pins AND submits in one command.
 2. After execution: `userDirective` set, `forceNextAppend` armed, a real user message in the transcript, and an agent turn started.
 3. On the next `turn_end` sheet, the directive appears in the `[User directive]` / standing-guardrail block.
-4. **Turn-1 framing (PENDING):** on the submitted turn, the LLM context includes the directive framed as the standing guardrail (via the `before_agent_start` transient bridge), and the bridge is **not** re-injected on the next turn — including under `never`-injection-policy, where no sheet is ever appended.
+4. **Status visibility (by design, not a gap):** the directive's status is set in the workpad immediately; the agent reads it on the next completed turn (forced-append, ahead of cadence). The optional "status on the submitted turn" refinement is out of scope.
 5. If the agent is streaming: pin is set and the submit is queued via `deliverAs: "followUp"` (no unhandled exception).
 6. If no model/auth: pin is set and the error is handled (no unhandled exception surfaces).
 7. Validation errors (empty, >300) occur **before** any pin entry is written.

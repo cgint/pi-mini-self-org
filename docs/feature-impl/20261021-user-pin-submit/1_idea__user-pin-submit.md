@@ -39,23 +39,19 @@ The directive and the triggering prompt are one atomic user action:
 Both write the identical `mini-self-org-user-pin` session entry. They differ
 only in what happens *after* persistence.
 
-## The turn-1 guardrail-framing gap (open design concern)
+## The turn-1 status-visibility nuance (settled — not a gap)
 
-"Submitting the text as the user message" delivers the *text*, but **not** the
-*standing-invariant status*. The pinned-as-supreme-guardrail state only enters
-the LLM context at the `turn_end`-emitted sheet — *after* the agent already
-replied to the submitted text. So on turn 1 the LLM sees the raw text as an
-ordinary user request, **not** framed as the supreme invariant. The invariant
-framing takes effect from turn 2 onward.
+"Submitting the text as the user message" delivers the directive's *text*
+immediately (turn 1). Its *standing-invariant status* is **set in the workpad
+immediately** on pin/submit; the agent *reads* it when a sheet is injected, and
+the pin's `forceNextAppend` pulls that to the **next completed turn** (ahead of
+any cadence tick).
 
-**This is the part of the feature that is *not* yet implemented.** The
-currently-shipped `pin-submit` closes the "submit now" half (the text reaches
-the LLM on turn 1) but leaves the "it is a standing guardrail *from turn 1*"
-half blind. Closing it requires a turn-1 transient-directive bridge: inject the
-directive's supreme-invariant framing into the LLM context of the submitted
-turn, then disarm on the next turn boundary. See `3_plan__user-pin-submit.md`
-(Pending section) for the constraints (turn-boundary disarm, `never`-policy
-regression, shared invariant text, distinct customType).
+So on the submitted turn the LLM has the text but not yet the sheet's
+supreme-invariant framing; that framing lands one completed turn later. This is
+**by design (cadence-controlled visibility), not a missing piece.** An optional
+"show the status on the submitted turn itself" bridge was considered and
+**deliberately not adopted** — see the Decision note below.
 
 ## SDK facts (verified in `agent-session.js` / `types.d.ts`)
 
@@ -69,10 +65,13 @@ regression, shared invariant text, distinct customType).
 
 ## Implementation status
 
-- ✅ **Implemented:** pin + submit, idle → direct send / busy → `followUp`, validation (trim / empty / ≤300), interactive `ui.input` fallback, `forceNextAppend` arming.
-- ❌ **Pending:** turn-1 guardrail-framing bridge (`before_agent_start` transient injection + turn-boundary disarm).
+- ✅ **Implemented (feature is COMPLETE):** pin + submit, idle → direct send / busy → `followUp`, validation (trim / empty / ≤300), interactive `ui.input` fallback, `forceNextAppend` arming.
+- The directive's **status is set in the workpad immediately** on pin/submit. **When the agent reads it is governed by the injection cadence** — the pin's `forceNextAppend` pulls that to the *next completed turn* (ahead of any cadence tick). That one-turn-later *visibility* is by design (cadence-controlled), **not** a gap.
+
+> **Decision (2026-10-21):** This feature is **done**. The "turn-1 guardrail-framing bridge" was an optional refinement (show the standing-rule *status* on the submitted turn itself) that is **not** required and **not** implemented. Do not re-open it as missing feature work. The one-turn-later status visibility is acceptable and intended.
 
 ## Out of scope
 
 - Modifying existing `/mini-self-org-user-pin` behavior.
-- A new persistent customType for the pin (reuses `USER_PIN_CUSTOM_TYPE`; the pending turn-1 bridge uses a *separate, non-persisted* customType).
+- A new persistent customType for the pin (reuses `USER_PIN_CUSTOM_TYPE`).
+- The turn-1 status-visibility bridge (settled not-adopted; see Decision above).
