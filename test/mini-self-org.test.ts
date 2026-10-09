@@ -1633,7 +1633,7 @@ describe("miniSelfOrg", () => {
 
       // Display: combined workpad with directive
       const notifyArg = notify.mock.calls[0][0] as string;
-      expect(notifyArg).toContain("[User directive] (set by user, immutable)");
+      expect(notifyArg).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable)");
       expect(notifyArg).toContain("Do not touch the DB schema");
       expect(notify.mock.calls[0][1]).toBe("info");
 
