@@ -10,16 +10,20 @@ system event. It is built by `steeringNoticeText(snapshot, directive)`:
 - **Pin (guardrail) leads**, then `goal`, `focus`, then list **counts**
   (`1 action` / `2 actions`, `1 blocker` / `2 blockers`). `notes` is omitted for space.
 - Single string values are quoted and **truncated to 30 chars** with `…`.
+- **Single-line budget:** the *total* line is capped at **70 code-points**; when it would exceed
+  that, lower-priority fields (focus, then list counts) are dropped, so it never wraps on an
+  80-column terminal. (Measured: a typical line is ~38 chars; the worst case degrades to the pin
+  alone at ~36 chars.)
 - Only non-empty fields appear; joined with `·`.
 - **Empty (no pad, no pin)** → `workpad cleared`.
 - No `↻`/`✓` glyph, no `turn N`, no "compass"/"steering updated" jargon.
 
 Examples:
 ```
-pin "Be careful" · goal "Ship" · focus "Test focus" · 2 actions
-goal "Ship" · focus "Test focus" · 1 action
-2 actions · 1 blocker
-workpad cleared
+pin "Be careful" · goal "Ship the MVP"            (pin + goal fit; focus/lists dropped when long)
+2 actions · 1 blocker                              (lists only, no goal/focus)
+goal "Ship" · focus "Test focus" · 1 action        (typical, fits under budget)
+workpad cleared                                    (empty)
 ```
 
 ### Content-gating (the "only when it changed" gate)

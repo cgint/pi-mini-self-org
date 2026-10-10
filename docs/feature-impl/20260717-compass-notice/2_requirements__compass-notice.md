@@ -19,15 +19,25 @@ steering state / guardrail."
   no `turn N` jargon, no "compass" metaphor (that is the agent's internal term, not the user's).
 
 ## Wording contract (revised)
-The notice is a plain one-liner that names *what* changed in the user's own vocabulary:
-- **Update:** `steering updated: <summary>` where `<summary>` lists the present workpad fields
-  and the pin (if any), e.g. `steering updated: goal “Ship” · focus “Test focus” · 2 actions · pin “Be careful”`.
-  Only non-empty fields appear; a pin, when present, is always surfaced (the guardrail is the
-  most important thing to know about).
-- **Clear:** `steering cleared` (content → empty; no summary, nothing left to show).
-- No `↻` / `✓` glyph is required but is acceptable as a small prefix; **no `turn N`** in the line.
-- Field labels are `goal`, `focus`, `actions`, `blockers`, `notes` (count when > 1, e.g. `2 actions`);
-  a single item shows its text in quotes, multiple shows the count.
+The notice is a plain one-liner that shows *what the agent now carries* in the user's own
+vocabulary — no verb prefix, no jargon, no `turn N`, no `↻`/`✓` glyph. It is a short human note,
+not a system event.
+- **Fields:** the pin (guardrail) **leads**, then `goal`, `focus`, then list counts (`1 action` /
+  `2 actions`, `1 blocker` / `2 blockers`). `notes` is omitted for space. Only non-empty fields
+  appear; a pin, when present, is always surfaced (the guardrail is the most important thing to know).
+- **Single-line guarantee:** each string field is truncated to 30 chars, and the *total* line is
+  capped at 70 code-points — when the line would exceed that, lower-priority fields (focus, then
+  list counts) are dropped, so it never wraps on an 80-column terminal.
+- **Clear:** `workpad cleared` (content → empty; no summary, nothing left to show).
+- Field values are quoted; list counts are bare (`2 actions`).
+
+Examples (worst-case stays ≤ 70 chars):
+```
+pin "Be careful" · goal "Ship the MVP"            (pin + goal fit; focus/lists dropped when long)
+goal "Ship" · focus "Test focus" · 1 action       (typical)
+5 actions · 3 blockers                            (lists only)
+workpad cleared                                   (empty)
+```
 
 ## Non-goals
 - Not a persistent / scrollable chat entry (a `display:true` custom message was considered and rejected — it pollutes the transcript and was not requested).
@@ -35,10 +45,10 @@ The notice is a plain one-liner that names *what* changed in the user's own voca
 - Not a task tracker / progress bar (explicitly out of scope, per AGENTS.md).
 
 ## Acceptance criteria
-1. On a due turn where the steering content is (non-empty pad OR active pin) **and** the content key differs from the last injected content → one-line status `steering updated: <summary>` (summary per the wording contract above).
+1. On a due turn where the steering content is (non-empty pad OR active pin) **and** the content key differs from the last injected content → one-line status showing the present steering content (pin-first, budgeted per the wording contract above).
 2. On a due turn with **identical** content key → **no** line (dedup by content, not by turn).
 3. On the **empty-pad nudge** branch (no pad, no pin) → **no** "updated" line.
-4. On **clear/unpin** transition (content → empty) → a distinct `steering cleared` line (losing a guardrail is not silent). No re-fire on subsequent empty ticks.
+4. On **clear/unpin** transition (content → empty) → a distinct `workpad cleared` line (losing a guardrail is not silent). No re-fire on subsequent empty ticks.
 5. On **session reload / branch-switch** that re-injects the same content → **no** spurious line (dedup seeded in `reconstruct`).
 6. **Agent-invisible**: the `entries` array returned by `turn_end` is byte-identical to before this feature (still the single sheet entry, `display:false`). The notice is a pure `ctx.ui.notify` side-effect, which pi routes to the TUI status line (interactive), an RPC event (`rpc`), or a no-op (`no-UI`) — never into the LLM request.
 7. **Crash-safe**: a missing `ui` (defensive; pi guarantees non-null) must never break the essential sheet injection.

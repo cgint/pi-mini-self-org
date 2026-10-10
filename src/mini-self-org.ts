@@ -405,12 +405,19 @@ function steeringContentKey(snapshot: WorkpadSnapshot, directive: UserDirective 
 }
 
 const NOTICE_MAX_FIELD_CHARS = 30;
+const NOTICE_MAX_TOTAL_CHARS = 70;
+const NOTICE_SEPARATOR = " \u00B7 ";
 const NOTICE_ELLIPSIS = "\u2026";
 
 /** Truncates a single field value to a short, glance-able form for the TUI notice line. */
 function truncateForNotice(value: string): string {
   const trimmed = value.trim();
   return trimmed.length <= NOTICE_MAX_FIELD_CHARS ? trimmed : `${trimmed.slice(0, NOTICE_MAX_FIELD_CHARS - 1)}${NOTICE_ELLIPSIS}`;
+}
+
+/** Code-point length (not UTF-16 units) so CJK / emoji do not mis-measure the notice width. */
+function noticeLength(value: string): number {
+  return [...value].length;
 }
 
 /** Pluralized list count, e.g. "1 action" / "2 actions"; returns null when the list is empty. */
@@ -420,18 +427,30 @@ function countLabel(items: string[], singular: string, plural: string): string |
 }
 
 /** Builds the one-line, TUI-only steering notice: a short human note of what the agent now carries.
- *  Verbose content is truncated; `notes` is omitted for space. The pin (a human guardrail) leads.
- *  Returns the "cleared" line when there is no content and no pin. */
+ *  Fields are added in priority order (pin > goal > focus > list counts) and lower-priority fields
+ *  are dropped once the total would exceed NOTICE_MAX_TOTAL_CHARS, so the notice stays a single line.
+ *  The pin (a human guardrail) always leads. Returns "workpad cleared" when nothing is present. */
 function steeringNoticeText(snapshot: WorkpadSnapshot, directive: UserDirective | null): string {
-  const parts: string[] = [];
-  if (directive?.text) parts.push(`pin \u201C${truncateForNotice(directive.text)}\u201D`);
-  if (snapshot.overallGoal) parts.push(`goal \u201C${truncateForNotice(snapshot.overallGoal)}\u201D`);
-  if (snapshot.currentFocus) parts.push(`focus \u201C${truncateForNotice(snapshot.currentFocus)}\u201D`);
+  const fields: string[] = [];
+  if (directive?.text) fields.push(`pin \u201C${truncateForNotice(directive.text)}\u201D`);
+  if (snapshot.overallGoal) fields.push(`goal \u201C${truncateForNotice(snapshot.overallGoal)}\u201D`);
+  if (snapshot.currentFocus) fields.push(`focus \u201C${truncateForNotice(snapshot.currentFocus)}\u201D`);
   const actionLabel = countLabel(snapshot.nextActions, "action", "actions");
-  if (actionLabel) parts.push(actionLabel);
+  if (actionLabel) fields.push(actionLabel);
   const blockerLabel = countLabel(snapshot.blockers, "blocker", "blockers");
-  if (blockerLabel) parts.push(blockerLabel);
-  return parts.length > 0 ? parts.join(" \u00B7 ") : "workpad cleared";
+  if (blockerLabel) fields.push(blockerLabel);
+  if (fields.length === 0) return "workpad cleared";
+  // Greedily keep the highest-priority fields that fit within the total-length budget.
+  let result = fields[0];
+  for (let i = 1; i < fields.length; i += 1) {
+    const candidate = `${result}${NOTICE_SEPARATOR}${fields[i]}`;
+    if (noticeLength(candidate) <= NOTICE_MAX_TOTAL_CHARS) {
+      result = candidate;
+    } else {
+      break;
+    }
+  }
+  return result;
 }
 
 /** Renders the periodic empty-workpad nudge sheet (scheduled mode): reminds the agent to set steering state. Carries no snapshot payload. */

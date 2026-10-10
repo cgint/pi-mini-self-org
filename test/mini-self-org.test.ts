@@ -919,6 +919,27 @@ describe("miniSelfOrg", () => {
       expect(notify).toHaveBeenCalledTimes(1);
     });
 
+    it("stays a single line (<=70 chars) by dropping lower-priority fields when the notice would overflow", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      // Long pin + long goal + long focus + lists: the full summary would be ~140 chars,
+      // so the budgeted formatter must keep only the highest-priority fields that fit.
+      const long = "Implement a complete authentication flow with refresh tokens";
+      const execRes = await tool.execute("id", { overallGoal: long, currentFocus: long, nextActions: [long, long, long, long, long], blockers: [long], notes: [long] });
+      expect(execRes?.isError).toBeFalsy();
+      const turnEndResult = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(turnEndResult?.entries).toHaveLength(1); // a real sheet was injected (pad is non-empty)
+      expect(notify).toHaveBeenCalledTimes(1);
+      const text = notify.mock.calls[0][0] as string;
+      // Single-line guarantee: code-point length within the 70-char budget.
+      expect([...text].length).toBeLessThanOrEqual(70);
+      // Highest-priority field (goal) is always kept first; lower-priority fields are dropped.
+      expect(text).toMatch(/^goal /);
+      // It must NOT contain the full overflowing fields verbatim (they were truncated/dropped).
+      expect(text).not.toContain(long);
+    });
+
     it("re-fires when the steering content actually changes (new workpad state or a pin)", async () => {
       const { handlers, tool } = setupWithInjection("scheduled:1");
       const turnEnd = handlers.get("turn_end")!;
