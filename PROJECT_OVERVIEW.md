@@ -10,38 +10,43 @@ The extension is **functionally complete** for its core scope:
 - Env var `MINI_SELF_ORG_INJECTION`: `never` (default), `user-boundary`, `scheduled:<N>`, `history-scheduled:<N>` (alias), composite `user-boundary+scheduled:<N>`
 - User-pinned directives: `/mini-self-org-user-pin` / `/mini-self-org-user-unpin`
 - Focus history: `/mini-self-org-history` command + tool
-- **TUI-only compass notice** (uncommitted): a one-line `ctx.ui.notify` shows the
-  human when the steering sheet is injected to the agent — `↻ compass updated`
-  on a content change, `✓ compass cleared` on content→empty. Content-gated (not
-  every tick), quiet on reload, agent-invisible (the sheet stays `display:false`).
+- **TUI-only steering notice** (committed, `4fda753` / `061d07d` / `c79854b`): a
+  content-gated one-line `ctx.ui.notify` shows the human what the agent now carries when the
+  steering sheet is injected — pin-first, 70-char-budgeted summary (e.g.
+  `pin "Be careful" · goal "Ship the MVP"`), `workpad cleared` on content→empty. Quiet on
+  reload, agent-invisible (the sheet stays `display:false`).
   See `docs/feature-impl/20260717-compass-notice/`.
 - Comprehensive test suite (~1700 lines, 106 tests)
 
-## Active WIP (uncommitted)
+## Current state
 
-**User-Pin Visual Emphasis & Semantic Clarity** — in-flight changes:
-- `src/mini-self-org.ts`: New `USER_GUARDRAIL_DELIMITER` (`─`×60) and
-  `INJECTION_GUARDRAIL_DELIMITER` (`═`×60); `formatWorkpad` and
-  `historySheetBody` now render the directive with explicit visual borders,
-  "supreme invariant" operational rule, and silent-adherence instruction.
-- `test/mini-self-org.test.ts`: Updated assertions + 5 new acceptance tests
-  (REQ-1/AC-1, REQ-2, REQ-2/AC-4, REQ-3/AC-2, AC-3).
-- `docs/cache-test-matrix.md`: Updated.
-- `docs/feature-impl/README.md`: Feature-impl directory convention established.
-- `docs/requirements-user-pin-emphasis-and-semantics.md`: Requirements doc (draft).
-- **Status:** Reviewed by Gemini sub-agent (2026-10-07) — no defects found.
-  Ready for commit or further refinement.
+Working tree is clean except the `README.md` blocker-cap correction (two → three,
+matching `MAX_BLOCKERS = 3`). Both feature threads are committed:
+
+- **User-pin visual emphasis** (committed `a5b0760`): `USER_GUARDRAIL_DELIMITER`
+  (`─`×60) / `INJECTION_GUARDRAIL_DELIMITER` (`═`×60); `formatWorkpad` and
+  `historySheetBody` render the directive with explicit borders, the "supreme
+  invariant" operational rule, and the silent-adherence instruction. Reviewed by
+  a Gemini sub-agent (2026-10-07) — no defects found.
+- **TUI-only steering notice** (committed `4fda753` / `061d07d` / `c79854b`): the
+  content-gated `ui.notify` one-liner, refined to a pin-first, 70-char-budgeted
+  summary (`workpad cleared` when empty). Agent-invisible; precommit green (108 tests).
+  See `docs/feature-impl/20260717-compass-notice/`.
+
+**Open:** the transient `cg-task-result-diff-review.md` (user-pin emphasis diff,
+2026-10-07) remains in the repo root — decide git-ignore vs archive (it references
+git-ignored `.codegiant/` paths).
 
 ## Next Actions
 
-1. **Commit** the user-pin emphasis WIP (diff is reviewed and clean).
-2. Consider moving the WIP docs into `docs/feature-impl/20261007-user-pin-emphasis/`
-   per the new convention.
-3. **Cache validation:** Run cache-test-matrix experiments on Gemini 3.7/3.8
+1. **Decide** on `cg-task-result-diff-review.md` (transient): git-ignore vs archive
+   it (references git-ignored `.codegiant/` paths; review conclusion already in the
+   feature doc).
+2. **Cache validation:** Run cache-test-matrix experiments on Gemini 3.7/3.8
    and a weaker model to validate `scheduled:N` retention.
-4. **Weak-model retention:** Measure whether the injection cadence preserves
+3. **Weak-model retention:** Measure whether the injection cadence preserves
    steering on lower-capability models (open research question).
-5. **Release:** Bump version, update README if any behavior changed since last publish.
+4. **Release:** Bump version, update README if any behavior changed since last publish.
 
 ## Blockers
 
