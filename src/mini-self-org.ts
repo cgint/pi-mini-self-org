@@ -404,6 +404,36 @@ function steeringContentKey(snapshot: WorkpadSnapshot, directive: UserDirective 
   return JSON.stringify([directive?.text ?? null, snapshot.overallGoal, snapshot.currentFocus, snapshot.nextActions, snapshot.blockers, snapshot.notes]);
 }
 
+const NOTICE_MAX_FIELD_CHARS = 30;
+const NOTICE_ELLIPSIS = "\u2026";
+
+/** Truncates a single field value to a short, glance-able form for the TUI notice line. */
+function truncateForNotice(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length <= NOTICE_MAX_FIELD_CHARS ? trimmed : `${trimmed.slice(0, NOTICE_MAX_FIELD_CHARS - 1)}${NOTICE_ELLIPSIS}`;
+}
+
+/** Pluralized list count, e.g. "1 action" / "2 actions"; returns null when the list is empty. */
+function countLabel(items: string[], singular: string, plural: string): string | null {
+  if (items.length === 0) return null;
+  return items.length === 1 ? `1 ${singular}` : `${items.length} ${plural}`;
+}
+
+/** Builds the one-line, TUI-only steering notice: a short human note of what the agent now carries.
+ *  Verbose content is truncated; `notes` is omitted for space. The pin (a human guardrail) leads.
+ *  Returns the "cleared" line when there is no content and no pin. */
+function steeringNoticeText(snapshot: WorkpadSnapshot, directive: UserDirective | null): string {
+  const parts: string[] = [];
+  if (directive?.text) parts.push(`pin \u201C${truncateForNotice(directive.text)}\u201D`);
+  if (snapshot.overallGoal) parts.push(`goal \u201C${truncateForNotice(snapshot.overallGoal)}\u201D`);
+  if (snapshot.currentFocus) parts.push(`focus \u201C${truncateForNotice(snapshot.currentFocus)}\u201D`);
+  const actionLabel = countLabel(snapshot.nextActions, "action", "actions");
+  if (actionLabel) parts.push(actionLabel);
+  const blockerLabel = countLabel(snapshot.blockers, "blocker", "blockers");
+  if (blockerLabel) parts.push(blockerLabel);
+  return parts.length > 0 ? parts.join(" \u00B7 ") : "workpad cleared";
+}
+
 /** Renders the periodic empty-workpad nudge sheet (scheduled mode): reminds the agent to set steering state. Carries no snapshot payload. */
 function emptyNudgeBody(turnIndex: number, postCompaction = false): string {
   const header = postCompaction
@@ -506,14 +536,14 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let sessionTurnCount = 0;
   let userDirective: UserDirective | null = null;
   // TUI-only notice dedup: remembers the steering content last injected, so a one-line
-  // "compass updated" notice shows only when the content actually changed (not every tick).
+  // steering notice shows only when the content actually changed (not every tick).
   // Seeded in reconstruct (session_start/session_tree) so a resume or branch-switch that
   // re-injects identical content stays quiet — the notice is for genuine changes, not reloads.
   // Not persisted to the branch, so it is pure session-view state.
   let lastInjectedContentKey = "";
   // Whether the last injected steering state actually had content (pad or pin). Used so a
   // transition to empty (clearing the workpad or unpinning) can show a distinct "cleared"
-  // one-line — symmetric with "compass updated" for the add/change case.
+  // one-line — symmetric with the add/change case.
   let lastHadSteeringContent = false;
   // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
   let pendingUserBoundary = false;
@@ -539,7 +569,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       forceNextAppend = true;
     }
     // Seed the notice dedup with the reconstructed content so a reload/branch-switch that
-    // re-injects the same steering state does NOT show a spurious "compass updated" notice.
+    // re-injects the same steering state does NOT show a spurious steering notice.
     lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
     lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
   };
@@ -593,7 +623,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
         // line in interactive mode, an RPC event in rpc mode, and a no-op in no-UI mode.
         // The optional chain is defensive: pi guarantees a non-null ui, but a missing ui must
         // never break the (essential) sheet injection — the notice is a side effect only.
-        ctx.ui?.notify?.(`\u21bb compass updated (turn ${sessionTurnCount})`, "info");
+        ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info");
       }
       lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
       return {
@@ -621,7 +651,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       if (lastHadSteeringContent) {
         lastHadSteeringContent = false;
         lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
-        ctx.ui?.notify?.(`\u2733 compass cleared (turn ${sessionTurnCount})`, "info");
+        ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info");
       }
       return {
         entries: [{

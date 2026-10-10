@@ -890,7 +890,7 @@ describe("miniSelfOrg", () => {
     expect(r3.entries[0].content).toContain("turn 3)");
   });
 
-  describe("TUI-only compass-updated notice (content-gated, agent-invisible)", () => {
+  describe("TUI-only steering notice (content-gated, agent-invisible)", () => {
     // A context that records ui.notify calls; the injection sheet itself is a single entry.
     const uiCtx = (notifySpy: ReturnType<typeof vi.fn> = vi.fn()) => ({ sessionManager: { getBranch: () => [] }, ui: { notify: notifySpy } });
 
@@ -904,7 +904,13 @@ describe("miniSelfOrg", () => {
       const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
       expect(r1.entries).toHaveLength(1); // sheet is still a single entry — agent context unchanged
       expect(notify).toHaveBeenCalledTimes(1);
-      expect(notify.mock.calls[0][0]).toContain("compass updated");
+      // The one-line notice is a short human summary of what the agent now carries —
+      // workpad fields (goal/focus/action) surfaced, no jargon, no 'turn N'.
+      const noticeText = notify.mock.calls[0][0] as string;
+      expect(noticeText).toContain('goal \u201CShip\u201D');
+      expect(noticeText).toContain('focus \u201CTest focus\u201D');
+      expect(noticeText).toContain("1 action");
+      expect(noticeText).not.toMatch(/turn \d/);
       expect(notify.mock.calls[0][1]).toBe("info");
 
       // Same steering content re-injected on the next tick → silent (dedup by content, not turn index).
@@ -992,15 +998,15 @@ describe("miniSelfOrg", () => {
       expect(first).toHaveBeenCalledTimes(1);
 
       // Clear the whole workpad: transition from content → empty takes the nudge branch, which
-      // now shows a distinct 'cleared' notice (losing the compass is not silent).
+      // now shows a distinct 'cleared' notice (losing the steering state is not silent).
       await tool.execute("id", { overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
       const cleared = vi.fn();
       const rCleared = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(cleared));
       // The nudge sheet is still injected to the agent...
       expect(rCleared.entries[0].content).toContain("the workpad is empty");
-      // ...and the human sees a 'cleared' one-line (not 'updated').
+      // ...and the human sees a 'cleared' one-line (not a content summary).
       expect(cleared).toHaveBeenCalledTimes(1);
-      expect(cleared.mock.calls[0][0]).toContain("compass cleared");
+      expect(cleared.mock.calls[0][0]).toBe("workpad cleared");
 
       // A further empty tick (still empty, no prior content) must NOT re-fire the cleared notice.
       const again = vi.fn();

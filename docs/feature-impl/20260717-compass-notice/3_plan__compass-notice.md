@@ -1,8 +1,26 @@
-# Plan: TUI-only compass-notice
+# Plan: TUI-only steering-notice
 
 ## Design (implemented)
 The feature adds **only** a UI side-effect to the existing `turn_end`
 injection handler. The agent's `entries` return value is untouched.
+
+### Notice wording (one short line, no jargon)
+The notice is a glance-able human note of what the agent now carries — not a
+system event. It is built by `steeringNoticeText(snapshot, directive)`:
+- **Pin (guardrail) leads**, then `goal`, `focus`, then list **counts**
+  (`1 action` / `2 actions`, `1 blocker` / `2 blockers`). `notes` is omitted for space.
+- Single string values are quoted and **truncated to 30 chars** with `…`.
+- Only non-empty fields appear; joined with `·`.
+- **Empty (no pad, no pin)** → `workpad cleared`.
+- No `↻`/`✓` glyph, no `turn N`, no "compass"/"steering updated" jargon.
+
+Examples:
+```
+pin "Be careful" · goal "Ship" · focus "Test focus" · 2 actions
+goal "Ship" · focus "Test focus" · 1 action
+2 actions · 1 blocker
+workpad cleared
+```
 
 ### Content-gating (the "only when it changed" gate)
 - New helper `steeringContentKey(snapshot, directive)` returns
@@ -20,9 +38,10 @@ injection handler. The agent's `entries` return value is untouched.
 - Session-view state `lastHadSteeringContent` (boolean) records whether the
   last injected steering state had content.
 - In the **nudge branch** (empty pad + no pin, which is where clear/unpin
-  lands), if `lastHadSteeringContent` was true, fire a distinct
-  `✓ compass cleared (turn N)` line and reset the flag. This makes losing a
-  guardrail/compass non-silent, symmetric with the "updated" notice.
+  lands), if `lastHadSteeringContent` was true, fire the distinct
+  `workpad cleared` line (via `steeringNoticeText`, which returns that string
+  when there is no content and no pin) and reset the flag. This makes losing a
+  guardrail non-silent, symmetric with the content-change case.
 - A subsequent empty tick (still empty, no prior content) does **not** re-fire.
 
 ### Quiet-on-reload (dedup seeded in `reconstruct`)
