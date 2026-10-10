@@ -399,6 +399,11 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
   return snapshot.overallGoal !== null || snapshot.currentFocus !== null || snapshot.nextActions.length > 0 || snapshot.blockers.length > 0 || snapshot.notes.length > 0;
 }
 
+/** Serializes only the steering content (pin text + workpad fields) for change detection. Deliberately excludes the turn index and compaction flag, which change on every tick and would defeat the "only when it changed" gate. */
+function steeringContentKey(snapshot: WorkpadSnapshot, directive: UserDirective | null): string {
+  return JSON.stringify([directive?.text ?? null, snapshot.overallGoal, snapshot.currentFocus, snapshot.nextActions, snapshot.blockers, snapshot.notes]);
+}
+
 /** Renders the periodic empty-workpad nudge sheet (scheduled mode): reminds the agent to set steering state. Carries no snapshot payload. */
 function emptyNudgeBody(turnIndex: number, postCompaction = false): string {
   const header = postCompaction
@@ -500,6 +505,16 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let isPostCompaction = false;
   let sessionTurnCount = 0;
   let userDirective: UserDirective | null = null;
+  // TUI-only notice dedup: remembers the steering content last injected, so a one-line
+  // "compass updated" notice shows only when the content actually changed (not every tick).
+  // Seeded in reconstruct (session_start/session_tree) so a resume or branch-switch that
+  // re-injects identical content stays quiet — the notice is for genuine changes, not reloads.
+  // Not persisted to the branch, so it is pure session-view state.
+  let lastInjectedContentKey = "";
+  // Whether the last injected steering state actually had content (pad or pin). Used so a
+  // transition to empty (clearing the workpad or unpinning) can show a distinct "cleared"
+  // one-line — symmetric with "compass updated" for the add/change case.
+  let lastHadSteeringContent = false;
   // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
   let pendingUserBoundary = false;
   const anyPersistentTrigger = () => injectionPolicy.userBoundary || injectionPolicy.scheduledInterval !== undefined;
@@ -523,6 +538,10 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       // Reproduces legacy semantics (old code set forceNextInjection=true in reconstruct).
       forceNextAppend = true;
     }
+    // Seed the notice dedup with the reconstructed content so a reload/branch-switch that
+    // re-injects the same steering state does NOT show a spurious "compass updated" notice.
+    lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
+    lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
   };
   pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
   pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
@@ -538,7 +557,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   // Passive history append: every N completed turns (scheduled) or on the first completed turn
   // after each user-submitted agent loop (user-boundary), re-append the workpad state as a
   // custom_message entry (R1 recall). Re-appends regardless of change; no `continue` (D2).
-  pi.on("turn_end", (event) => {
+  pi.on("turn_end", (event, ctx) => {
     if (event.outcome !== "completed") return undefined;
     if (!injectionPolicy.userBoundary && injectionPolicy.scheduledInterval === undefined) return undefined;
     // Q3 marker: increment whenever any persistent trigger is enabled, so every sheet
@@ -565,6 +584,18 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       forceNextAppend = false;
       isPostCompaction = false;
       if (scheduledDue) turnsSinceLastAppend = 0;
+      // TUI-only, content-gated one-line: visible to the human, never reaches the agent (ui.notify
+      // is a pure UI call, not a message). Fires only when the steering content actually changed.
+      const contentKey = steeringContentKey(snapshot, userDirective);
+      if (contentKey !== lastInjectedContentKey) {
+        lastInjectedContentKey = contentKey;
+        // ui.notify is a pure UI call (never reaches the agent): it routes to the TUI status
+        // line in interactive mode, an RPC event in rpc mode, and a no-op in no-UI mode.
+        // The optional chain is defensive: pi guarantees a non-null ui, but a missing ui must
+        // never break the (essential) sheet injection — the notice is a side effect only.
+        ctx.ui?.notify?.(`\u21bb compass updated (turn ${sessionTurnCount})`, "info");
+      }
+      lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
       return {
         entries: [{
           type: "custom_message",
@@ -584,6 +615,14 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       forceNextAppend = false;
       isPostCompaction = false;
       turnsSinceLastAppend = 0;
+      // Clear/unpin notice: if the previously injected steering state had content and it is now
+      // empty (workpad cleared and/or pin removed), show a distinct one-line so losing a guardrail
+      // is not silent. The nudge sheet itself is still injected to the agent; this is TUI-only.
+      if (lastHadSteeringContent) {
+        lastHadSteeringContent = false;
+        lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
+        ctx.ui?.notify?.(`\u2733 compass cleared (turn ${sessionTurnCount})`, "info");
+      }
       return {
         entries: [{
           type: "custom_message",

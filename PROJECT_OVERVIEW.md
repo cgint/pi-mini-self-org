@@ -1,6 +1,6 @@
 # Project Overview — pi-mini-self-org
 
-*Last updated: 2026-10-07*
+*Last updated: 2026-07-17*
 
 ## Current State
 
@@ -10,7 +10,12 @@ The extension is **functionally complete** for its core scope:
 - Env var `MINI_SELF_ORG_INJECTION`: `never` (default), `user-boundary`, `scheduled:<N>`, `history-scheduled:<N>` (alias), composite `user-boundary+scheduled:<N>`
 - User-pinned directives: `/mini-self-org-user-pin` / `/mini-self-org-user-unpin`
 - Focus history: `/mini-self-org-history` command + tool
-- Comprehensive test suite (~1600 lines)
+- **TUI-only compass notice** (uncommitted): a one-line `ctx.ui.notify` shows the
+  human when the steering sheet is injected to the agent — `↻ compass updated`
+  on a content change, `✓ compass cleared` on content→empty. Content-gated (not
+  every tick), quiet on reload, agent-invisible (the sheet stays `display:false`).
+  See `docs/feature-impl/20260717-compass-notice/`.
+- Comprehensive test suite (~1700 lines, 106 tests)
 
 ## Active WIP (uncommitted)
 

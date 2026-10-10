@@ -890,6 +890,188 @@ describe("miniSelfOrg", () => {
     expect(r3.entries[0].content).toContain("turn 3)");
   });
 
+  describe("TUI-only compass-updated notice (content-gated, agent-invisible)", () => {
+    // A context that records ui.notify calls; the injection sheet itself is a single entry.
+    const uiCtx = (notifySpy: ReturnType<typeof vi.fn> = vi.fn()) => ({ sessionManager: { getBranch: () => [] }, ui: { notify: notifySpy } });
+
+    it("fires the one-line exactly once when steering content is injected, and stays silent on redundant re-injection", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+
+      // First sheet (content differs from the initial empty key) → notice fires once.
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(r1.entries).toHaveLength(1); // sheet is still a single entry — agent context unchanged
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify.mock.calls[0][0]).toContain("compass updated");
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Same steering content re-injected on the next tick → silent (dedup by content, not turn index).
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(notify));
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-fires when the steering content actually changes (new workpad state or a pin)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Changing a workpad field changes the content key → fires again.
+      await tool.execute("id", { ...valid, currentFocus: "Refocus" });
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(2);
+
+      // Re-injecting the same (unchanged) state again → silent.
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    it("never fires for the empty-pad nudge (nothing real was injected)", async () => {
+      const { handlers } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      // Empty pad, no pin: a due tick emits only the nudge sheet — no notice.
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(r1.entries[0].content).toContain("the workpad is empty");
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("does not reach the agent: the notice is a UI call, and the sheet entry is unchanged (display:false, no notice entry)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      // The only injected entry is the sheet: display:false, the workpad custom type, no notice entry.
+      expect(r1.entries).toHaveLength(1);
+      expect(r1.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+      expect(r1.entries[0].display).toBe(false);
+      // The human-facing line is purely a side effect; it is NOT a persisted message entry.
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires when a user-pin is set or cleared within a session (pin text is part of the content key)", async () => {
+      const { handlers, tool, commands, pi } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const pinCmd = commands.get("mini-self-org-user-pin").handler;
+      const unpinCmd = commands.get("mini-self-org-user-unpin").handler;
+      const cmdCtx = (n: ReturnType<typeof vi.fn>) => ({ hasUI: false, ui: { notify: n }, isIdle: () => true });
+
+      // Populate the pad and consume the first notice.
+      await tool.execute("id", valid);
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx());
+
+      // The pin/unpin commands notify their own workpad display — use a throwaway spy for the
+      // command ctx so it does not pollute the turn_end notice count. The turn_end ctx gets the
+      // counting spy. Pin is a steering-content change even with identical workpad fields.
+      await pinCmd("Be careful", cmdCtx(vi.fn()));
+      const pinNotify = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(pinNotify));
+      expect(pinNotify).toHaveBeenCalledTimes(1);
+
+      // Unpinning (back to no pin) is another content change → fires again.
+      await unpinCmd("", cmdCtx(vi.fn()));
+      const unpinNotify = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(unpinNotify));
+      expect(unpinNotify).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires a distinct 'cleared' notice when steering state goes from content to empty (workpad cleared / pin removed)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+
+      // Populate and establish the injected content.
+      await tool.execute("id", valid);
+      const first = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(first));
+      expect(first).toHaveBeenCalledTimes(1);
+
+      // Clear the whole workpad: transition from content → empty takes the nudge branch, which
+      // now shows a distinct 'cleared' notice (losing the compass is not silent).
+      await tool.execute("id", { overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
+      const cleared = vi.fn();
+      const rCleared = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(cleared));
+      // The nudge sheet is still injected to the agent...
+      expect(rCleared.entries[0].content).toContain("the workpad is empty");
+      // ...and the human sees a 'cleared' one-line (not 'updated').
+      expect(cleared).toHaveBeenCalledTimes(1);
+      expect(cleared.mock.calls[0][0]).toContain("compass cleared");
+
+      // A further empty tick (still empty, no prior content) must NOT re-fire the cleared notice.
+      const again = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(again));
+      expect(again).not.toHaveBeenCalled();
+    });
+
+    it("documents the mode asymmetry: in pure user-boundary mode a cleared pad injects nothing and shows no notice", async () => {
+      // In user-boundary mode (no scheduled interval) the empty-pad nudge branch never runs,
+      // because scheduledDue is always false. Clearing the pad therefore injects NO sheet and
+      // shows NO notice. This is deliberate: a TUI notice must ride an actual injection (the
+      // single source of truth is 'injected -> notify'); forcing a 'cleared' notice with no
+      // injection would break that invariant. Locked here so the asymmetry is not 'accidentally'
+      // 'fixed' into firing-without-injection.
+      const { handlers, tool, pi } = setupWithInjection("user-boundary");
+      const turnEnd = handlers.get("turn_end")!;
+      const userBoundaryArm = handlers.get("before_agent_start")!;
+      const notify = vi.fn();
+
+      // Populate the pad, then a user turn + boundary arms pendingUserBoundary.
+      await tool.execute("id", valid);
+      await userBoundaryArm({}, context());
+      const pop = vi.fn();
+      const rPop = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(pop));
+      expect(rPop.entries).toHaveLength(1); // sheet injected
+      expect(pop).toHaveBeenCalledTimes(1); // 'updated' fired (content change from baseline)
+
+      // Clear the pad: in user-boundary mode nothing is injected (no nudge branch), so no notice.
+      await tool.execute("id", { overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
+      await userBoundaryArm({}, context());
+      const cleared = vi.fn();
+      const rClear = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(cleared));
+      expect(rClear).toBeUndefined(); // no injection at all in this mode
+      expect(cleared).not.toHaveBeenCalled(); // and therefore no 'cleared' notice
+    });
+
+    it("is quiet when a resume/branch-switch re-injects identical content (dedup key seeded by reconstruct)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+      // Establish the injected content.
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Simulate a branch-switch/resume with the SAME steering state: reconstruct seeds the
+      // dedup key from the reconstructed snapshot, so the forced first sheet must NOT re-notify.
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
+      await handlers.get("session_tree")?.({}, branch);
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(1); // identical content on reload → silent
+
+      // ...but a genuinely changed state on the new branch still notifies.
+      await tool.execute("id", { ...valid, currentFocus: "New branch focus" });
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not crash when ctx.ui is absent (non-interactive / no-UI context)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      await tool.execute("id", valid);
+      // A context with NO ui field at all — the notice must be a safe no-op, not a throw, and
+      // the sheet must still be injected.
+      const noUiCtx = { sessionManager: { getBranch: () => [] } };
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, noUiCtx);
+      expect(r1.entries).toHaveLength(1);
+      expect(r1.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+    });
+  });
+
   it("T5: context hook is strip-only in all modes (no injection path, ever)", async () => {
     // The context hook is strip-only regardless of mode: it strips WORKPAD_CUSTOM_TYPE custom
     // messages and never injects. Verify under several modes, including a populated workpad.

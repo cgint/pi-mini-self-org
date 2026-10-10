@@ -146,8 +146,7 @@ Interactive test: `pi -e ./index.ts`
   providers. See `docs/cache-test-matrix.md`.
 - **Weak-model retention:** Whether `scheduled:N` cadence preserves
   steering effectively on weaker models is unmeasured.
-- **Feature-impl directory:** `docs/feature-impl/` convention exists but has
-  no feature directories yet (the user-pin emphasis WIP is in root docs).
+- **Feature-impl directories:** `docs/feature-impl/` holds `20261021-user-pin-submit/` and `20260717-compass-notice/` (TUI-only steering notice). The user-pin emphasis WIP is still in root docs, not yet backfilled.
 - **No AGENTS.md existed before this bootstrap** — earlier sessions had no
   pairing memory anchor.
 
