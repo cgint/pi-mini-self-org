@@ -7,11 +7,14 @@ turn-boundary cadence (user-boundary and/or `scheduled:N`), the human sees
 steering state / guardrail."
 
 ## Goal (verbatim, from user)
-- Show a **TUI-only, one-line** message when the self-org info is shown to the agent.
+- Show a **TUI-only, one-line** message **whenever the self-org sheet is injected to the agent**,
+  so the human is informed that the agent now carries the steering state / guardrail.
 - The change must be **minimal**.
 - The **agent sees NO change** (zero new prompt tokens; the existing sheet stays `display:false`).
-- The line must **NOT fire on every tick** — only when the steering content **actually changed**.
-- Specifically: **not** on redundant re-injection of identical content, and **not** for the empty-pad nudge.
+- The line fires **on every sheet injection** — i.e. on every due turn that actually emits a
+  steering sheet (pad content or active pin), matching the `user-boundary` / `scheduled:N`
+  cadence. It is a "the agent is carrying this" ticker, **not** a content-change signal.
+- The line does **NOT fire for the empty-pad nudge** (a nudge sheet is not steering content).
 - **Visible to the human** in the TUI.
 - The line should read like a **short human note, not a system event** — tell a little of the
   story, minimally, and surface the actual content: the **self-workpad** fields (goal / focus /
@@ -28,7 +31,9 @@ not a system event.
 - **Single-line guarantee:** each string field is truncated to 30 chars, and the *total* line is
   capped at 70 code-points — when the line would exceed that, lower-priority fields (focus, then
   list counts) are dropped, so it never wraps on an 80-column terminal.
-- **Clear:** `workpad cleared` (content → empty; no summary, nothing left to show).
+- **No distinct "cleared" line:** when content → empty, the next due turn is the nudge branch
+  (not a steering sheet), so the notice does **not** fire. The helper's empty-case return is a
+  defensive guard, not a state the notice surfaces.
 - Field values are quoted; list counts are bare (`2 actions`).
 
 Examples (worst-case stays ≤ 70 chars):
@@ -36,7 +41,6 @@ Examples (worst-case stays ≤ 70 chars):
 pin "Be careful" · goal "Ship the MVP"            (pin + goal fit; focus/lists dropped when long)
 goal "Ship" · focus "Test focus" · 1 action       (typical)
 5 actions · 3 blockers                            (lists only)
-workpad cleared                                   (empty)
 ```
 
 ## Non-goals
@@ -45,15 +49,15 @@ workpad cleared                                   (empty)
 - Not a task tracker / progress bar (explicitly out of scope, per AGENTS.md).
 
 ## Acceptance criteria
-1. On a due turn where the steering content is (non-empty pad OR active pin) **and** the content key differs from the last injected content → one-line status showing the present steering content (pin-first, budgeted per the wording contract above).
-2. On a due turn with **identical** content key → **no** line (dedup by content, not by turn).
-3. On the **empty-pad nudge** branch (no pad, no pin) → **no** "updated" line.
-4. On **clear/unpin** transition (content → empty) → a distinct `workpad cleared` line (losing a guardrail is not silent). No re-fire on subsequent empty ticks.
-5. On **session reload / branch-switch** that re-injects the same content → **no** spurious line (dedup seeded in `reconstruct`).
+1. On **every** due turn that emits a steering sheet (non-empty pad OR active pin) → one-line status showing the present steering content (pin-first, budgeted per the wording contract above). This fires on every `user-boundary` and every `scheduled:N` tick, even when the content is unchanged.
+2. **No dedup by content:** re-injecting identical steering content on a later due turn **still** fires the line (it is a per-injection ticker, not a change signal).
+3. On the **empty-pad nudge** branch (no pad, no pin) → **no** line (a nudge sheet is not steering content; the human is not told about an empty-state reminder).
+4. On **clear/unpin** (content → empty): the next due turn emits the nudge sheet (not a steering sheet), so **no steering line** fires for it; the guardrail-loss is visible because the *next* sheet with content (if any) carries it. (If a pin is removed and no pad content remains, subsequent ticks are nudge-only → no line.)
+5. On **session reload / branch-switch** that re-injects steering content → the line **does** fire (it is a real injection the human should see); this is consistent with the per-injection rule.
 6. **Agent-invisible**: the `entries` array returned by `turn_end` is byte-identical to before this feature (still the single sheet entry, `display:false`). The notice is a pure `ctx.ui.notify` side-effect, which pi routes to the TUI status line (interactive), an RPC event (`rpc`), or a no-op (`no-UI`) — never into the LLM request.
 7. **Crash-safe**: a missing `ui` (defensive; pi guarantees non-null) must never break the essential sheet injection.
-8. **Wording**: no "compass" / "turn N" in the user-facing line; workpad + pin content surfaced when present; one line.
+8. **Wording**: no "compass" / "turn N" in the user-facing line; workpad + pin content surfaced when present; one line; single-line budget (≤70 code-points) preserved.
 
 ## Out-of-scope (rejected alternatives, with reason)
 - **`display:true` custom message** — pollutes the persistent transcript; not requested; a status line is the minimal correct surface.
-- **Notifying on every tick** — violates "not on every tick"; defeated the change-detection requirement.
+- **Notifying on the empty-pad nudge** — a nudge (no steering content) is not "the agent carries my steering"; it would flood the human with reminders to *set* state they have chosen not to set.

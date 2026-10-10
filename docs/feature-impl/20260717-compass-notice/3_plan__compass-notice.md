@@ -15,7 +15,8 @@ system event. It is built by `steeringNoticeText(snapshot, directive)`:
   80-column terminal. (Measured: a typical line is ~38 chars; the worst case degrades to the pin
   alone at ~36 chars.)
 - Only non-empty fields appear; joined with `·`.
-- **Empty (no pad, no pin)** → `workpad cleared`.
+- **No distinct "cleared" line:** the empty-pad nudge branch does not fire the notice (a nudge is
+  not steering content). The helper's empty-case return is a defensive guard, not a surfaced state.
 - No `↻`/`✓` glyph, no `turn N`, no "compass"/"steering updated" jargon.
 
 Examples:
@@ -23,38 +24,26 @@ Examples:
 pin "Be careful" · goal "Ship the MVP"            (pin + goal fit; focus/lists dropped when long)
 2 actions · 1 blocker                              (lists only, no goal/focus)
 goal "Ship" · focus "Test focus" · 1 action        (typical, fits under budget)
-workpad cleared                                    (empty)
 ```
 
-### Content-gating (the "only when it changed" gate)
-- New helper `steeringContentKey(snapshot, directive)` returns
-  `JSON.stringify([directive?.text ?? null, overallGoal, currentFocus,
-  nextActions, blockers, notes])`.
-  - **Excludes** the turn index and the post-compaction flag — both change on
-    every tick and would defeat the gate.
-  - **Includes** the pin text, so a pin-only change (pad fields identical) is
-    a genuine content change.
-- Session-view state `lastInjectedContentKey` (string, not persisted to the
-  branch) holds the last injected key. A due sheet fires the notice only when
-  the current key differs.
-
-### "Cleared" notice (content → empty transition)
-- Session-view state `lastHadSteeringContent` (boolean) records whether the
-  last injected steering state had content.
-- In the **nudge branch** (empty pad + no pin, which is where clear/unpin
-  lands), if `lastHadSteeringContent` was true, fire the distinct
-  `workpad cleared` line (via `steeringNoticeText`, which returns that string
-  when there is no content and no pin) and reset the flag. This makes losing a
-  guardrail non-silent, symmetric with the content-change case.
-- A subsequent empty tick (still empty, no prior content) does **not** re-fire.
-
-### Quiet-on-reload (dedup seeded in `reconstruct`)
-- `reconstruct` (run on `session_start` / `session_tree`) seeds
-  `lastInjectedContentKey = steeringContentKey(snapshot, userDirective)` and
-  `lastHadSteeringContent = hasContent(snapshot) || userDirective !== null`.
-- Consequence: a resume or branch-switch that re-injects the **same** steering
-  state stays quiet — the notice is for genuine changes, not reloads. This is a
-  deliberate design decision (restored state is the baseline, not a change).
+### Per-injection firing (no content dedup)
+- The notice fires **on every due turn that emits a steering sheet** — i.e. inside
+  the `turn_end` branch gated by
+  `(hasContent(snapshot) || userDirective !== null) && (boundaryDue || scheduledDue || forceAppend)`.
+  It calls `ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info")`
+  unconditionally, so the human sees a line each time the agent gets the sheet
+  (every `user-boundary` and every `scheduled:N` tick), even when the content is
+  unchanged. This is a "the agent is carrying this" ticker, **not** a change signal.
+- There is **no** `steeringContentKey` / `lastInjectedContentKey` dedup and **no**
+  `lastHadSteeringContent` "cleared" transition flag — those were removed with the
+  content-change design.
+- The **empty-pad nudge** branch (no pad, no pin) does **not** fire a notice — a
+  nudge is not steering content, so the human is not told about an empty-state
+  reminder. (If a pin is removed and no pad content remains, subsequent ticks are
+  nudge-only → no line.)
+- **Reload / branch-switch** that re-injects steering content **does** fire the
+  notice (it is a real injection the human should see); consistent with the
+  per-injection rule, no special seeding is needed.
 
 ### Why `ctx.ui.notify` (and not a `display:true` custom message)
 - `ui.notify` is a **pure UI call**: in interactive mode it routes to
@@ -71,18 +60,18 @@ workpad cleared                                    (empty)
   defensive `ctx.ui?.notify?.` optional-chain ensures a missing `ui` never
   breaks the essential sheet injection).
 
-## Test coverage plan (implemented)
-- Fires on first content injection.
-- Silent on identical-content re-injection (dedup).
-- Re-fires on a genuine content change.
-- Silent on the empty-pad nudge.
-- **Distinct "cleared" notice on content → empty**; no re-fire on subsequent
-  empty ticks.
+## Test coverage plan (per-injection)
+- **Fires on every sheet injection:** consecutive due turns with identical
+  steering content each fire the line (the ticker), not just the first.
+- **User-boundary + scheduled cadence:** with `scheduled:1`, the notice fires on
+  every completed turn that emits a steering sheet.
+- **Silent on the empty-pad nudge** (no pad, no pin) — zero notice calls on the
+  nudge branch.
+- **Pin-only sheet:** an active pin with an empty pad fires the line on every due
+  turn (the guardrail is steering content the human is informed about).
 - **Agent-invisible**: `entries` length unchanged, `display:false`,
-  `customType` unchanged.
-- **Pin set / unpin within a session** (pin text part of the content key).
-- **Quiet on reload**: `session_tree` seeding means an identical re-injection
-  does not fire.
+  `customType` unchanged (byte-identical `entries` payload).
+- **Single-line budget** preserved (≤70 code-points) on every fire.
 - **No-`ui` crash-safety**: `turn_end` with `ctx.ui` undefined still injects
   the sheet.
 
@@ -91,15 +80,10 @@ workpad cleared                                    (empty)
   (98 pre-existing, 0 churn + 8 new), 0 vulnerabilities.
 
 ## Known limitations / unverified
-- **Mode asymmetry (by design, locked by a test):** the `compass cleared`
-  notice only fires in modes where the empty-pad nudge branch runs (i.e. when a
-  scheduled interval is enabled). In **pure `user-boundary` mode**, clearing the
-  pad injects *nothing* (the nudge is a scheduled-only feature), so there is no
-  injection to ride a notice on and the clear is silent. This is deliberate: the
-  single source of truth is `injected -> notify`; a notice with no corresponding
-  injection would break that invariant. A documentation test
-  ("documents the mode asymmetry…") locks this so it is not accidentally "fixed"
-  into firing-without-injection.
+- **Re-notification is intentional (user requirement):** with a live pin and
+  `scheduled:N`, the line re-fires every `N` turns even when nothing changed —
+  this is the "the agent still carries my guardrail" ticker the user asked for,
+  not a bug. It is deliberately *not* deduped.
 - **[unverified]** live TUI status-line rendering not observed in a real
   `pi -e` session (API path confirmed + unit-tested; the visual is not).
 - The notice is a **transient status line** (replaced by the next status), not

@@ -399,11 +399,6 @@ function hasContent(snapshot: WorkpadSnapshot): boolean {
   return snapshot.overallGoal !== null || snapshot.currentFocus !== null || snapshot.nextActions.length > 0 || snapshot.blockers.length > 0 || snapshot.notes.length > 0;
 }
 
-/** Serializes only the steering content (pin text + workpad fields) for change detection. Deliberately excludes the turn index and compaction flag, which change on every tick and would defeat the "only when it changed" gate. */
-function steeringContentKey(snapshot: WorkpadSnapshot, directive: UserDirective | null): string {
-  return JSON.stringify([directive?.text ?? null, snapshot.overallGoal, snapshot.currentFocus, snapshot.nextActions, snapshot.blockers, snapshot.notes]);
-}
-
 const NOTICE_MAX_FIELD_CHARS = 30;
 const NOTICE_MAX_TOTAL_CHARS = 70;
 const NOTICE_SEPARATOR = " \u00B7 ";
@@ -429,7 +424,9 @@ function countLabel(items: string[], singular: string, plural: string): string |
 /** Builds the one-line, TUI-only steering notice: a short human note of what the agent now carries.
  *  Fields are added in priority order (pin > goal > focus > list counts) and lower-priority fields
  *  are dropped once the total would exceed NOTICE_MAX_TOTAL_CHARS, so the notice stays a single line.
- *  The pin (a human guardrail) always leads. Returns "workpad cleared" when nothing is present. */
+ *  The pin (a human guardrail) always leads. In practice this is only ever called when a steering
+ *  sheet is emitted (pin or pad content present), so `fields` is non-empty; the empty return is a
+ *  defensive guard against a future call-site change, not a state the notice actually surfaces. */
 function steeringNoticeText(snapshot: WorkpadSnapshot, directive: UserDirective | null): string {
   const fields: string[] = [];
   if (directive?.text) fields.push(`pin \u201C${truncateForNotice(directive.text)}\u201D`);
@@ -439,7 +436,7 @@ function steeringNoticeText(snapshot: WorkpadSnapshot, directive: UserDirective 
   if (actionLabel) fields.push(actionLabel);
   const blockerLabel = countLabel(snapshot.blockers, "blocker", "blockers");
   if (blockerLabel) fields.push(blockerLabel);
-  if (fields.length === 0) return "workpad cleared";
+  if (fields.length === 0) return "";
   // Greedily keep the highest-priority fields that fit within the total-length budget.
   let result = fields[0];
   for (let i = 1; i < fields.length; i += 1) {
@@ -554,16 +551,6 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   let isPostCompaction = false;
   let sessionTurnCount = 0;
   let userDirective: UserDirective | null = null;
-  // TUI-only notice dedup: remembers the steering content last injected, so a one-line
-  // steering notice shows only when the content actually changed (not every tick).
-  // Seeded in reconstruct (session_start/session_tree) so a resume or branch-switch that
-  // re-injects identical content stays quiet — the notice is for genuine changes, not reloads.
-  // Not persisted to the branch, so it is pure session-view state.
-  let lastInjectedContentKey = "";
-  // Whether the last injected steering state actually had content (pad or pin). Used so a
-  // transition to empty (clearing the workpad or unpinning) can show a distinct "cleared"
-  // one-line — symmetric with the add/change case.
-  let lastHadSteeringContent = false;
   // Persistent user-boundary trigger: armed by before_agent_start, consumed by turn_end.
   let pendingUserBoundary = false;
   const anyPersistentTrigger = () => injectionPolicy.userBoundary || injectionPolicy.scheduledInterval !== undefined;
@@ -587,10 +574,6 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       // Reproduces legacy semantics (old code set forceNextInjection=true in reconstruct).
       forceNextAppend = true;
     }
-    // Seed the notice dedup with the reconstructed content so a reload/branch-switch that
-    // re-injects the same steering state does NOT show a spurious steering notice.
-    lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
-    lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
   };
   pi.on("session_start", async (_event, ctx) => reconstruct(ctx));
   pi.on("session_tree", async (_event, ctx) => reconstruct(ctx));
@@ -633,18 +616,11 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       forceNextAppend = false;
       isPostCompaction = false;
       if (scheduledDue) turnsSinceLastAppend = 0;
-      // TUI-only, content-gated one-line: visible to the human, never reaches the agent (ui.notify
-      // is a pure UI call, not a message). Fires only when the steering content actually changed.
-      const contentKey = steeringContentKey(snapshot, userDirective);
-      if (contentKey !== lastInjectedContentKey) {
-        lastInjectedContentKey = contentKey;
-        // ui.notify is a pure UI call (never reaches the agent): it routes to the TUI status
-        // line in interactive mode, an RPC event in rpc mode, and a no-op in no-UI mode.
-        // The optional chain is defensive: pi guarantees a non-null ui, but a missing ui must
-        // never break the (essential) sheet injection — the notice is a side effect only.
-        ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info");
-      }
-      lastHadSteeringContent = hasContent(snapshot) || userDirective !== null;
+      // TUI-only, per-injection one-line: visible to the human, never reaches the agent
+      // (ui.notify is a pure UI call, not a message). Fires on EVERY due turn that emits a
+      // steering sheet — a "the agent is carrying this" ticker matching the cadence, not a
+      // content-change signal. The empty-pad nudge branch below does NOT fire this.
+      ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info");
       return {
         entries: [{
           type: "custom_message",
@@ -664,14 +640,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       forceNextAppend = false;
       isPostCompaction = false;
       turnsSinceLastAppend = 0;
-      // Clear/unpin notice: if the previously injected steering state had content and it is now
-      // empty (workpad cleared and/or pin removed), show a distinct one-line so losing a guardrail
-      // is not silent. The nudge sheet itself is still injected to the agent; this is TUI-only.
-      if (lastHadSteeringContent) {
-        lastHadSteeringContent = false;
-        lastInjectedContentKey = steeringContentKey(snapshot, userDirective);
-        ctx.ui?.notify?.(steeringNoticeText(snapshot, userDirective), "info");
-      }
+      // Empty pad, no directive: this is a nudge sheet (an empty-state reminder), not steering
+      // content. No TUI notice fires here — the human is not told about an empty-state reminder.
       return {
         entries: [{
           type: "custom_message",
