@@ -10,11 +10,12 @@ The extension is **functionally complete** for its core scope:
 - Env var `MINI_SELF_ORG_INJECTION`: `never` (default), `user-boundary`, `scheduled:<N>`, `history-scheduled:<N>` (alias), composite `user-boundary+scheduled:<N>`
 - User-pinned directives: `/mini-self-org-user-pin` / `/mini-self-org-user-unpin`
 - Focus history: `/mini-self-org-history` command + tool
-- **TUI-only steering notice** (committed, `4fda753` / `061d07d` / `c79854b`): a
-  content-gated one-line `ctx.ui.notify` shows the human what the agent now carries when the
-  steering sheet is injected — pin-first, 70-char-budgeted summary (e.g.
-  `pin "Be careful" · goal "Ship the MVP"`), `workpad cleared` on content→empty. Quiet on
-  reload, agent-invisible (the sheet stays `display:false`).
+- **TUI-only steering notice** (committed, `4fda753` / `061d07d` / `c79854b` / `7c81e89`): a
+  one-line `ctx.ui.notify` that fires on **every** steering-sheet injection (matching the
+  `user-boundary` / `scheduled:N` cadence) — a "the agent is carrying this" ticker, pin-first,
+  70-char-budgeted (e.g. `pin "Be careful" · goal "Ship the MVP"`). Silent on the empty-pad nudge;
+  agent-invisible (the sheet stays `display:false`). The earlier content-gated design was
+  superseded by per-injection firing (`7c81e89`).
   See `docs/feature-impl/20260717-compass-notice/`.
 - Comprehensive test suite (~1700 lines, 106 tests)
 
@@ -28,10 +29,10 @@ matching `MAX_BLOCKERS = 3`). Both feature threads are committed:
   `historySheetBody` render the directive with explicit borders, the "supreme
   invariant" operational rule, and the silent-adherence instruction. Reviewed by
   a Gemini sub-agent (2026-10-07) — no defects found.
-- **TUI-only steering notice** (committed `4fda753` / `061d07d` / `c79854b`): the
-  content-gated `ui.notify` one-liner, refined to a pin-first, 70-char-budgeted
-  summary (`workpad cleared` when empty). Agent-invisible; precommit green (108 tests).
-  See `docs/feature-impl/20260717-compass-notice/`.
+- **TUI-only steering notice** (committed `4fda753` / `061d07d` / `c79854b` / `7c81e89`): the
+  `ui.notify` one-liner now fires on **every** sheet injection (per-injection ticker, not
+  content-gated); pin-first, 70-char-budgeted; silent on the empty-pad nudge. Agent-invisible;
+  precommit green (106 tests). See `docs/feature-impl/20260717-compass-notice/`.
 
 **Open:** the transient `cg-task-result-diff-review.md` (user-pin emphasis diff,
 2026-10-07) remains in the repo root — decide git-ignore vs archive (it references

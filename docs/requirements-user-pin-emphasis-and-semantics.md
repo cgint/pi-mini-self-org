@@ -36,7 +36,7 @@ Currently, users can pin a standing instruction to guide the AI during long sess
   1. **Source & Authority:** This comes directly from the human and cannot be negotiated or altered by the AI.
   2. **Priority Hierarchy:** This is a supreme constraint. It strictly bounds and overrides all AI-generated goals, tasks, plans, and actions.
   3. **Behavioral Invariant:** The AI must never compromise or violate this rule in pursuit of any other task.
-  4. **Silent Adherence (Anti-Echo):** Strong emphasis must not provoke conversational chatter; the AI must adhere to the rule silently during execution rather than acknowledging, repeating, or reciting it.
+  4. **Silent Adherence (Anti-Echo):** Strong emphasis must not provoke conversational chatter; the AI must adhere to the rule silently during execution rather than acknowledging, repeating, or reciting it. This governs the **AI's conversational output only**. It does NOT constrain the human-facing TUI status-line blip: the `self-org-workpad-set` steering notice (`docs/feature-impl/20260717-compass-notice/`) intentionally re-blips on the injection cadence to inform the *human* that the guardrail is in the agent's head — that is a `ui.notify` side effect, invisible to the AI and does not make the AI recite the rule.
 - The terminology used must be plain and direct (e.g., a "Standing Guardrail" or "Non-Negotiable User Constraint") rather than generic technical jargon like "directive".
 
 ### REQ-4: Clear Boundary Between Human Rules and Agent Scratchpad

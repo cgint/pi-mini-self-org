@@ -84,7 +84,21 @@ goal "Ship" · focus "Test focus" · 1 action        (typical, fits under budget
   `scheduled:N`, the line re-fires every `N` turns even when nothing changed —
   this is the "the agent still carries my guardrail" ticker the user asked for,
   not a bug. It is deliberately *not* deduped.
+- **[OPEN — pending user decision] Pin re-blip vs the pin's "silent" requirement:**
+  `docs/requirements-user-pin-emphasis-and-semantics.md` REQ-3.4 / AC-2 require the
+  pin to be "silent adherence, no recital/chatter" — that rule governs the **agent's
+  conversational output** (the agent must not recite the guardrail back to the user),
+  which the notice does **not** affect (the notice is a pure `ui.notify` TUI status
+  line; the agent's responses are unchanged). The remaining tension is only the
+  *human-facing* blip: a live pin now re-blips every `scheduled:N` tick. This is the
+  literal consequence of the user's "fire on every sheet injection" instruction, but
+  it is **not yet adjudicated** in the pin-requirements doc. If the user wants the
+  human-facing blip to *not* repeat for a pin-only (empty-pad) sheet, that is a
+  small carve-out (suppress the notice when `userDirective !== null` &&
+  `!hasContent(snapshot)`); it is a product decision, not a code defect.
 - **[unverified]** live TUI status-line rendering not observed in a real
   `pi -e` session (API path confirmed + unit-tested; the visual is not).
 - The notice is a **transient status line** (replaced by the next status), not
-  a permanent chat entry — by design.
+  a permanent chat entry — by design. pi's `showStatus` is idempotent (replaces in
+  place), so repeating the blip does not fight TUI rendering; the only cost is
+  stream-append noise.

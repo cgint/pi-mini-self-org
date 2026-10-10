@@ -969,6 +969,67 @@ describe("miniSelfOrg", () => {
       expect(notify).not.toHaveBeenCalled();
     });
 
+    it("fires on every user-boundary turn in pure user-boundary mode (no scheduled interval)", async () => {
+      // user-boundary: each user prompt arms pendingUserBoundary; a completed turn emits the
+      // sheet and, per-injection, the notice. (No scheduled cadence involved.)
+      const { handlers, tool } = setupWithInjection("user-boundary");
+      const turnEnd = handlers.get("turn_end")!;
+      const armBoundary = handlers.get("before_agent_start")!;
+      await tool.execute("id", valid);
+
+      const n1 = vi.fn();
+      await armBoundary({}, context());
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(n1));
+      expect(n1).toHaveBeenCalledTimes(1);
+
+      // A second user prompt (new boundary) re-injects → fires again.
+      const n2 = vi.fn();
+      await armBoundary({}, context());
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(n2));
+      expect(n2).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires on the forced re-injection after compaction (forceNextAppend)", async () => {
+      // Compaction sets forceNextAppend; the next completed turn emits a forced sheet, which —
+      // being a real sheet injection — fires the notice.
+      const { handlers, tool } = setupWithInjection("scheduled:5"); // interval 5 so the tick isn't the trigger
+      const turnEnd = handlers.get("turn_end")!;
+      const compact = handlers.get("session_compact")!;
+      await tool.execute("id", valid);
+
+      // A few turns below the interval: no sheet (turnsSinceLastAppend < 5).
+      const quiet = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(quiet));
+      // (scheduled:5 → turn 1: turnsSinceLastAppend=1 <5, boundary not armed, no force → no sheet → no notify.)
+      expect(quiet).not.toHaveBeenCalled();
+
+      // Now compact → forceNextAppend. The very next completed turn emits a forced sheet.
+      await compact({}, context());
+      const forced = vi.fn();
+      const rForced = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(forced));
+      expect(rForced.entries).toHaveLength(1); // forced sheet injected
+      expect(forced).toHaveBeenCalledTimes(1); // per-injection notice fired
+    });
+
+    it("fires on reload / branch-switch that re-injects steering content (no longer 'quiet on reload')", async () => {
+      // Per-injection: a branch-switch/resume re-injects the steering sheet on the first
+      // completed turn (forceNextAppend), so the notice FIRES — the old 'quiet on reload'
+      // (content-dedup) behavior is gone. This locks requirement #5 (reload → line fires).
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      await tool.execute("id", valid);
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx());
+
+      // Simulate a branch-switch with the SAME steering state: reconstruct sets forceNextAppend,
+      // so the first completed turn re-injects the sheet and fires the notice.
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
+      const reload = vi.fn();
+      await handlers.get("session_tree")?.({}, branch);
+      const rReload = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(reload));
+      expect(rReload.entries).toHaveLength(1); // sheet re-injected
+      expect(reload).toHaveBeenCalledTimes(1); // per-injection: it fires on reload too
+    });
+
     it("does not reach the agent: the notice is a UI call, and the sheet entry is unchanged (display:false, no notice entry)", async () => {
       const { handlers, tool } = setupWithInjection("scheduled:1");
       const turnEnd = handlers.get("turn_end")!;
