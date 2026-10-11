@@ -1,6 +1,7 @@
 # Requirements: User-Pinned Guardrail Emphasis & Semantic Clarity
 
-**Status:** Draft / Ready for Alignment  
+**Status:** **Implemented** (2026-10-11) — REQ-1…REQ-4 shipped (commits `a5b0760` "feat: add visual emphasis and operational precedence to user-pinned guardrails", `4aa7ca8` "test+docs: close review follow-ups for the per-injection notice"). See `src/mini-self-org.ts` → `formatWorkpad` (turn-end injection, full-text pin + `USER STANDING GUARDRAIL` delimiter block) and `historySheetBody` (checkpoint sheet, `STANDING USER GUARDRAIL` block with the explicit operational conflict rule). This header previously read "Draft / Ready for Alignment" — that was stale.
+> Not yet backfilled into `docs/feature-impl/` (known gap, tracked in `AGENTS.md`). Residual gaps observed 2026-10-11 in a live failure (pi-focus-guard, pane w4B:p1): (1) the operational conflict rule is only in the checkpoint sheet, not in the primary `formatWorkpad` turn-end injection; (2) the TUI steering notice truncates the pin to 30 chars (`pin "…rq…"`), which can mislead the human about what text the agent actually carries.
 **Audience:** User, Product, Sub-Agent Implementation Team  
 **Scope:** Functional and behavioral requirements from a user experience and steering perspective (no implementation code).
 
