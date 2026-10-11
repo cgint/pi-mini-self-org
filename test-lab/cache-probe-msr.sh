@@ -13,7 +13,7 @@
 # and the structural byte-stability check below.
 #
 # What this probe measures (honest scope):
-#   - Warm-prefix reuse on gemini-3.7-flash when the request tail changes
+#   - Warm-prefix reuse on gemini-3.8-flash when the request tail changes
 #     (A->B) under each arm's REAL extension loaded alongside a logger
 #     (cacheRead per step; Gemini implicit caching, provider-reported only).
 #   - Sheet-body cost: the probe logger appends a deterministic workpad-shaped
@@ -31,7 +31,7 @@
 #
 # Usage:
 #   CACHE_PROBE_LIVE_CONFIRM=I_UNDERSTAND_THIS_SENDS_PROVIDER_REQUESTS \
-#     ./test-lab/cache-probe-msr.sh --arm always  --provider google --model gemini-3.7-flash
+#     ./test-lab/cache-probe-msr.sh --arm always  --provider google --model gemini-3.8-flash
 #
 # Output: test-lab/cache-probe-msr-<arm>-<runid>.jsonl
 set -euo pipefail

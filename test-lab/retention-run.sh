@@ -28,7 +28,7 @@
 #   nosheet -> history-scheduled:99  (0 persisted sheets: counter never fills)
 #
 # Usage:
-#   ./test-lab/retention-run.sh --arm history --provider google --model gemini-3.7-flash
+#   ./test-lab/retention-run.sh --arm history --provider google --model gemini-3.8-flash
 # Output: prints the session JSONL path on stdout.
 set -euo pipefail
 

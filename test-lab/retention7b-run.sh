@@ -19,15 +19,15 @@
 #            Probes at r12, r16, r20, r24, r28, r32, r36, r40 (every 4 rounds).
 #            8 probes per arm; 42 rounds total.
 #
-# Arms (same model google/gemini-3.7-flash, same N=4, same prompts):
+# Arms (same model google/gemini-3.8-flash, same N=4, same prompts):
 #   history -> history-scheduled:4   (current code: sheets re-appended every 4 turns)
 #   nosheet -> history-scheduled:99  (current code: counter never fills; copies ①/② only)
 #   always  -> always                (PRE-STEP-8 code 823516d via --root:
 #                       transient request-local sheet — true legacy control)
 #
 # Usage:
-#   ./test-lab/retention7b-run.sh --arm history --provider google --model gemini-3.7-flash
-#   ./test-lab/retention7b-run.sh --arm always --provider google --model gemini-3.7-flash \
+#   ./test-lab/retention7b-run.sh --arm history --provider google --model gemini-3.8-flash
+#   ./test-lab/retention7b-run.sh --arm always --provider google --model gemini-3.8-flash \
 #     --root /path/to/pre-step-8/worktree
 # Output: prints the session JSONL path on stdout.
 set -euo pipefail
