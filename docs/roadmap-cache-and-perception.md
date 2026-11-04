@@ -9,6 +9,25 @@ audit trail of that earlier decision; where it states `always` as the default, r
 pre-2026-09-17. `MINI_SELF_ORG_INJECTION` now accepts `never` (default), `always`, `user-boundary`,
 or `scheduled:N`.
 
+> **Superseded (2026-10-19):** the acceptance list above predates the hard-delete. Post-hard-delete,
+> `MINI_SELF_ORG_INJECTION` accepts `never` (default), `off`, `user-boundary` (persistent),
+> `scheduled:<N>` (persistent), and `history-scheduled:<N>` (aliased to `scheduled:<N>`). `always`
+> is **rejected with a warning + `never` fallback**. See the status note directly above.
+
+> **Status note (2026-10-19) — hard-delete of the transient injection path; unified on persistent
+> `turn_end` append.** The transient `context`-hook injection mechanism (per-request tail sheet) has
+> been **hard-deleted**: `contextMessage()`, `forceNextInjection`, `callsSinceLastInjectionOrWrite`,
+> and the `context` hook's `if (shouldInject)` append block are gone; the `context` hook is now
+> **strip-only**. The **persistent `turn_end` append is the sole injection mechanism.** The env var
+> grammar changes: `always` is **rejected with a warning + `never` fallback** (not a hard throw —
+> it would kill the entire extension, including tools, on upgrade; the warning names the migration
+> path `scheduled:1` for per-turn or `scheduled:N` for per-`N`-turns); `history-scheduled:<N>` is
+> **aliased** to `scheduled:<N>` (lossless rename, no warning); `user-boundary` is a persistent mode
+> (append on the first completed turn after each user-submitted agent loop). This supersedes the
+> `always`/`user-boundary`/`scheduled:N` transient arms referenced throughout the narrative below —
+> read them as the *pre-hard-delete* arms. See `docs/spec-hard-delete-transient-injection.md` for the
+> complete contract.
+
 Original: Decision map updated 2026-09-16. Default injection remains `always`; opt-in deterministic policies are implemented for measurement.
 Narrative history and the audit trail of retracted claims live in
 `20260911_workpad-voice-and-frame_1_PLAN.md`; this file is the current map.

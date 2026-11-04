@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, reconstructHistory, reconstructSnapshot, sanitizeSnapshot, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
+import miniSelfOrg, { emptySnapshot, formatFocusHistory, formatWorkpad, INJECTION_GUARDRAIL_DELIMITER, reconstructHistory, reconstructLastPersisted, reconstructSnapshot, reconstructUserDirective, sanitizeSnapshot, USER_GUARDRAIL_DELIMITER, USER_PIN_CUSTOM_TYPE, WorkpadGetParameters, WorkpadParameters, WORKPAD_GET_TOOL_NAME } from "../src/mini-self-org.js";
 
 const TOOL_NAME = "self-org-workpad-set";
 const HISTORICAL_TOOL_NAME = "mini-self-org-workpad";
@@ -18,17 +18,19 @@ function setup() {
     on: vi.fn((name: string, handler: Handler) => handlers.set(name, handler)),
     registerTool: vi.fn((definition) => tools.set(definition.name, definition)),
     registerCommand: vi.fn((name, definition) => commands.set(name, { name, ...definition })),
+    appendEntry: vi.fn(),
   } as unknown as ExtensionAPI;
   miniSelfOrg(pi);
   return { handlers, tool: tools.get(TOOL_NAME), tools, commands, pi };
 }
 
-function setupWithInjection(value: string | undefined) {
+function setupWithInjection(value: string | undefined, options?: { captureWarn?: boolean }) {
   const original = process.env.MINI_SELF_ORG_INJECTION;
   if (value === undefined) delete process.env.MINI_SELF_ORG_INJECTION;
   else process.env.MINI_SELF_ORG_INJECTION = value;
+  const warnSpy = options?.captureWarn ? vi.spyOn(console, "warn").mockImplementation(() => {}) : undefined;
   try {
-    return setup();
+    return { ...setup(), warnSpy };
   } finally {
     if (original === undefined) delete process.env.MINI_SELF_ORG_INJECTION;
     else process.env.MINI_SELF_ORG_INJECTION = original;
@@ -41,6 +43,9 @@ const workpadEntry = (toolName: string, snapshot: unknown, timestamp = 0) => ({
   message: { role: "toolResult", toolName, details: { snapshot }, timestamp },
 });
 const valid = { overallGoal: " Ship ", currentFocus: " Test focus ", nextActions: [" Test "], blockers: [], notes: [" Keep small "] };
+const pinEntry = (text: string | null, timestamp = 1) => ({ type: "custom", customType: USER_PIN_CUSTOM_TYPE, data: { text, timestamp } });
+
+const commandCtx = (ui: Record<string, any> = {}) => ({ hasUI: false, ui: { notify: vi.fn(), ...ui }, sessionManager: { getBranch: () => [] } });
 
 describe("miniSelfOrg", () => {
   it("separates overall goal from current focus and migrates legacy snapshots without inventing an overall goal", () => {
@@ -82,7 +87,7 @@ describe("miniSelfOrg", () => {
     expect(tool.description).toContain("replace the complete snapshot before the next consequential tool/action batch");
     expect(tool.description).toContain("Do not update ritualistically after every tool");
     expect(tool.promptGuidelines[0]).toContain("higher-level goals and durable steering");
-    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("your own recalled state, not user input")]));
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([expect.stringContaining("Do not merely state that it is stale"), expect.stringMatching(/workpad alone is not registered and must never be called as a tool/i), expect.stringContaining("The self-org-workpad-set workpad sheets are persisted into the conversation history at turn boundaries and are your own recalled state, not user input: never acknowledge, restate, or quote them")]));
     expect(tool.promptGuidelines.every((guideline: string) => guideline.includes(TOOL_NAME))).toBe(true);
     expect(commands.get("mini-self-org").description).toContain("read-only");
   });
@@ -95,15 +100,15 @@ describe("miniSelfOrg", () => {
     expect(get.label).toBe("Mini self-org workpad (read)");
     expect(get.promptGuidelines).toEqual([]);
     expect(TypeCompiler.Compile(WorkpadGetParameters).Check({})).toBe(true);
-    expect((await get.execute("id", {}, undefined, undefined, context())).content[0].text).toBe(formatWorkpad(emptySnapshot()));
+    expect((await get.execute("id", {})).content[0].text).toBe(formatWorkpad(emptySnapshot()));
   });
 
   it("workpad-get execute returns formatted snapshot and does not mutate state", async () => {
     const { handlers, tool, tools } = setupWithInjection("scheduled:2");
     const get = tools.get(WORKPAD_GET_TOOL_NAME);
     const written = await tool.execute("id", valid);
-    const before = await get.execute("id", {}, undefined, undefined, context([workpadEntry(TOOL_NAME, valid)]));
-    const after = await get.execute("id", {}, undefined, undefined, context([workpadEntry(TOOL_NAME, valid)]));
+    const before = await get.execute("id", {});
+    const after = await get.execute("id", {});
 
     expect(before.content[0].text).toBe(formatWorkpad(written.details.snapshot));
     expect(after.content[0].text).toBe(before.content[0].text);
@@ -111,9 +116,11 @@ describe("miniSelfOrg", () => {
     expect(get.renderResult(before, {}, {}, {}).render(80)).toEqual(before.content[0].text.split("\n"));
 
     const contextHandler = handlers.get("context")!;
-    const branchWithWrite = context([workpadEntry(TOOL_NAME, valid)]);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branchWithWrite)).messages).toHaveLength(1);
+    // Strip-only context hook: even a populated workpad never injects (scheduled:N injects at
+    // turn_end, not per request). Stale WORKPAD_CUSTOM_TYPE custom messages are still stripped.
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    expect((await contextHandler({ messages: [stale] }, context())).messages).toEqual([]);
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
   });
 
   it("describes every workpad field as high-level durable steering rather than transient status", () => {
@@ -145,7 +152,7 @@ describe("miniSelfOrg", () => {
       "- Keep small",
     ]);
 
-    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
+    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] });
     expect(rejected.isError).toBe(true);
     const jsonEncodedLists = await tool.execute("id", { ...valid, nextActions: '["Test"]', blockers: "[]", notes: "[]" });
     expect(jsonEncodedLists.isError).toBe(true);
@@ -156,12 +163,12 @@ describe("miniSelfOrg", () => {
 
   it("renders self-rejected workpad updates as rejected", async () => {
     const { tool } = setup();
-    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] });
+    const rejected = await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] });
 
     expect(rejected.isError).toBe(true);
     expect(tool.renderResult(rejected, {}, {}, { isError: true }).render(80)).toEqual([
       "Rejected — workpad unchanged (previous state still active).",
-      "Mini self-org workpad update rejected.",
+      "Mini self-org workpad update rejected: blockers has 4 items; max is 3.",
     ]);
   });
 
@@ -252,44 +259,47 @@ describe("miniSelfOrg", () => {
       const { handlers } = setupWithInjection(value);
       const branch = context([workpadEntry(TOOL_NAME, valid)]);
       await handlers.get("session_start")?.({}, branch);
-      await handlers.get("before_agent_start")?.({}, context());
+      await handlers.get("before_agent_start")?.({}, branch);
       const contextHandler = handlers.get("context")!;
+      // never mode: context hook is strip-only and turn_end never appends — no injection.
       expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
       expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+      expect(await handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, branch)).toBeUndefined();
     }
   });
 
-  it("uses 'always' to inject exactly one canonical current context block only when non-empty", async () => {
-    const { handlers } = setupWithInjection("always");
-    const contextHandler = handlers.get("context");
-    const existing = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    expect(await contextHandler?.({ messages: [user, existing] }, context())).toEqual({ messages: [user] });
+  it("'always' is rejected with a migration warning and falls back to never (no throw)", async () => {
+    const { handlers, warnSpy: _warnSpy } = setupWithInjection("always", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    // No throw: the extension initializes with a never fallback, preserving tool access.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:1/);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:N/);
 
-    const alwaysBranch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, alwaysBranch);
-    const result = (await contextHandler?.({ messages: [user, existing] }, alwaysBranch)) as { messages: any[] };
-    expect(result.messages).toHaveLength(2);
-    expect(result.messages[1]).toMatchObject({
-      role: "custom",
-      customType: WORKPAD_CUSTOM_TYPE,
-      display: false,
-      content: "Your own working scratchpad — high-level steering for this session, not a record and not a message from the user. Never acknowledge, restate, or quote it; use it to steer your next action. Re-derive operational facts from the conversation and tools rather than treating the snapshot as ground truth.\nCurrent until replaced or cleared.\n\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small",
-    });
-    expect(result.messages[1].content).toContain("not a message from the user");
-    expect(result.messages[1].content).not.toMatch(/must never be called as a tool/);
+    // never fallback: context hook strips (no injection) and turn_end never appends.
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    await handlers.get("before_agent_start")?.({}, context());
+    const contextHandler = handlers.get("context")!;
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+    expect(await handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
+    warnSpy.mockRestore();
   });
 
-  it("emits byte-identical context content while the snapshot is unchanged", async () => {
-    // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
-    // unchanged snapshot must not introduce divergence at the tail between requests.
-    const { handlers } = setupWithInjection("always");
-    const byteBranch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, byteBranch);
-    const contextHandler = handlers.get("context");
-    const first = (await contextHandler?.({ messages: [] }, byteBranch)) as { messages: any[] };
-    const second = (await contextHandler?.({ messages: [] }, byteBranch)) as { messages: any[] };
-    expect(first.messages[0].content).toBe(second.messages[0].content);
+  it("context hook is strip-only in every mode: never injects, always strips stale workpad custom messages", async () => {
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    const user = { role: "user", content: "keep", timestamp: 1 };
+    // The strip is unconditional across all modes — even a populated workpad never injects via context.
+    for (const value of ["never", "off", "user-boundary", "scheduled:2", "scheduled:1"]) {
+      const { handlers, tool } = setupWithInjection(value);
+      await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+      await handlers.get("before_agent_start")?.({}, context());
+      await tool.execute("id", valid);
+      await handlers.get("session_compact")?.({}, context());
+      const contextHandler = handlers.get("context")!;
+      // Stale workpad custom messages are stripped, non-workpad messages are kept, nothing is injected.
+      expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
+      expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+    }
   });
 
   it("reconstructs focus history: forward walk, dedupe, change markers, cleared entries", () => {
@@ -323,6 +333,32 @@ describe("miniSelfOrg", () => {
     expect(reconstructHistory(context(entries), 15).entries[0].snapshot.overallGoal).toBe("Goal 5");
   });
 
+  it("T6: history-tool isolation — reconstructHistory identical with vs. without WORKPAD_CUSTOM_TYPE sheets (F11)", () => {
+    const A = { overallGoal: "Ship", currentFocus: "Plan", nextActions: ["a1"], blockers: [], notes: [] };
+    const B = { overallGoal: "Ship", currentFocus: "Execute", nextActions: ["b1"], blockers: [], notes: [] };
+    const A2 = { overallGoal: "Ship", currentFocus: "Resume", nextActions: [], blockers: [], notes: ["n"] };
+    const sheetGhost = { overallGoal: "Sheet ghost", currentFocus: "Ghost focus", nextActions: ["ghost"], blockers: [], notes: [] };
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: sheetGhost },
+    });
+
+    const branchWithoutSheets = [workpadEntry(TOOL_NAME, A), workpadEntry(TOOL_NAME, B), workpadEntry(TOOL_NAME, A2)];
+    const branchWithSheets = [sheet(1), ...branchWithoutSheets, sheet(2), sheet(3)];
+
+    const withoutSheets = reconstructHistory(context(branchWithoutSheets));
+    const withSheets = reconstructHistory(context(branchWithSheets));
+
+    expect(withSheets).toEqual(withoutSheets);
+    expect(withoutSheets.total).toBe(3);
+    expect(withoutSheets.entries).toHaveLength(3);
+    expect(JSON.stringify(withoutSheets)).not.toMatch(/Sheet ghost/);
+    expect(JSON.stringify(withSheets)).not.toMatch(/Sheet ghost/);
+  });
+
   it("returns an empty history without ids when the branch has no workpad results", () => {
     const history = reconstructHistory(context([{ type: "message", message: { role: "toolResult", toolName: "read", details: undefined } }]));
     expect(history).toEqual({ total: 0, entries: [] });
@@ -342,15 +378,12 @@ describe("miniSelfOrg", () => {
   });
 
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
-    const { tool, handlers } = setupWithInjection("always");
+    const { tool } = setupWithInjection("scheduled:2");
     const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
-    const focusBranch = context([workpadEntry(TOOL_NAME, { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] })]);
-    const injected = await handlers.get("context")?.({ messages: [] }, focusBranch);
 
     expect(focusCleared.content[0].text).toBe("Mini self-org workpad updated.");
     expect(focusCleared.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
     expect(tool.renderResult(focusCleared, {}, {}, {}).render(80)).toContain("Overall goal: Ship");
-    expect(injected).toMatchObject({ messages: [expect.objectContaining({ content: expect.stringContaining("Overall goal: Ship") })] });
     expect(emptySnapshot()).toEqual({ overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
   });
 
@@ -396,38 +429,63 @@ describe("miniSelfOrg", () => {
   });
 
   it("accepts only the supported injection policy configuration", () => {
-    for (const value of [undefined, "", "always", "user-boundary", "never", "scheduled:2"]) {
+    // Accepted: never/off aliases, the two persistent modes, the history-scheduled alias,
+    // and the composite form (order-independent).
+    for (const value of [undefined, "", "never", "off", "scheduled:2", "scheduled:4", "user-boundary", "history-scheduled:8", "user-boundary+scheduled:3", "scheduled:3+user-boundary", "user-boundary+history-scheduled:3", "history-scheduled:3+user-boundary"]) {
       expect(() => setupWithInjection(value)).not.toThrow();
     }
-    for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "other"]) {
+    // Rejected (hard throw): malformed values that are not a silent alias or valid composite.
+    for (const value of ["Always", " user-boundary", "scheduled:0", "scheduled:-1", "scheduled:1.5", "scheduled:01", "scheduled:9007199254740992", "history-scheduled:0", "history-scheduled:", "history-scheduled:-1", "history-scheduled:x", "HISTORY-scheduled:8", "history-scheduled:8.0", "history-scheduled:9007199254740992", "other", "never+user-boundary", "off+scheduled:2", "always+user-boundary", "user-boundary+user-boundary", "scheduled:2+scheduled:3", "scheduled:2+history-scheduled:3", "user-boundary+", "+scheduled:2", "+", "user-boundary +scheduled:2", "user-boundary+scheduled: ", "foo+user-boundary", "user-boundary+scheduled:", "user-boundary+scheduled:0", "user-boundary+scheduled:1.5", "user-boundary+scheduled:01"]) {
       expect(() => setupWithInjection(value)).toThrow(/MINI_SELF_ORG_INJECTION/);
     }
+    // 'always' is a warn + never fallback, NOT a hard throw (spec §1/§11-5).
+    const { warnSpy: _warnSpy } = setupWithInjection("always", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toMatch(/scheduled:1|never/);
+    warnSpy.mockRestore();
+    expect(setupWithInjection("always", {}).handlers.get("turn_end")).toBeDefined();
   });
 
-  it("injects user-boundary state once, consumes empty boundaries, and removes stale blocks while suppressed", async () => {
-    const { handlers } = setupWithInjection("user-boundary");
-    const contextHandler = handlers.get("context")!;
-    const user = { role: "user", content: "keep", timestamp: 1 };
-    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    const ubBranch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, ubBranch);
-    expect((await contextHandler({ messages: [user] }, ubBranch)).messages).toHaveLength(2);
-    expect(await contextHandler({ messages: [user, stale] }, ubBranch)).toEqual({ messages: [user] });
-    await handlers.get("before_agent_start")?.({}, context());
-    expect((await contextHandler({ messages: [user] }, ubBranch)).messages).toHaveLength(2);
+  it("T1a: history-scheduled:N is aliased to { mode: scheduled, interval: N } (lossless rename, no warning)", async () => {
+    // Alias produces no warning (spec §11-4: silent lossless rename).
+    const { warnSpy: _warnSpy } = setupWithInjection("history-scheduled:4", { captureWarn: true });
+    const warnSpy = _warnSpy!;
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
 
-    const empty = setupWithInjection("user-boundary");
-    await empty.handlers.get("before_agent_start")?.({}, context());
-    await empty.handlers.get("context")!({ messages: [] }, context());
-    await empty.tool.execute("id", valid);
-    expect((await empty.handlers.get("context")!({ messages: [] }, context())).messages).toEqual([]);
+    // Behavior is identical to scheduled:N: verify a history-scheduled:2 setup appends on the
+    // 2nd completed turn, exactly like scheduled:2 (the internal mode is "scheduled").
+    const aliased = setupWithInjection("history-scheduled:2");
+    await aliased.tool.execute("id", valid);
+    const turnEnd = aliased.handlers.get("turn_end")!;
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
 
-    const recoveredEmpty = setupWithInjection("user-boundary");
-    await recoveredEmpty.handlers.get("session_start")?.({}, context());
-    await recoveredEmpty.handlers.get("context")!({ messages: [] }, context());
-    await recoveredEmpty.tool.execute("id", valid);
-    const recoveredBranch = context([workpadEntry(TOOL_NAME, valid)]);
-    expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, recoveredBranch)).messages).toHaveLength(1);
+    // A direct scheduled:2 setup exhibits the identical cadence — confirming the alias maps to scheduled.
+    const direct = setupWithInjection("scheduled:2");
+    await direct.tool.execute("id", valid);
+    const directTurnEnd = direct.handlers.get("turn_end")!;
+    expect(await directTurnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await directTurnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("user-boundary persistent mode: before_agent_start arms; first completed turn_end appends; second does not; next before_agent_start re-arms", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    const beforeAgentStart = handlers.get("before_agent_start");
+    await tool.execute("id", valid);
+
+    // User loop 1: arm the boundary, then the first completed turn appends.
+    await beforeAgentStart?.({}, context());
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).entries).toHaveLength(1);
+    // Second completed turn in the same user loop does NOT re-append (boundary consumed).
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+
+    // User loop 2: re-arming re-enables the append.
+    await beforeAgentStart?.({}, context());
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
   });
 
   it("never mode: suppresses all injection but still strips stale blocks", async () => {
@@ -459,7 +517,7 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // A rejected write does not trigger injection either:
-    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
+    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] })).isError).toBe(true);
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // Compaction does not trigger injection:
@@ -467,47 +525,58 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // workpad-get still returns the current snapshot in never mode (no injection needed):
-    const read = await get.execute("id", {}, undefined, undefined, branch);
+    const read = await get.execute("id", {});
     expect(read.isError).toBeUndefined();
     expect(read.content[0].text).toContain("Overall goal: Ship");
   });
 
-  it("schedules injections from writes and recovers after tree navigation and compaction", async () => {
+  it("schedules appends at the Nth completed turn, and recovers (force append) after tree navigation and compaction", async () => {
     const { handlers, tool } = setupWithInjection("scheduled:2");
-    const contextHandler = handlers.get("context")!;
+    const turnEnd = handlers.get("turn_end")!;
     const branch = context([workpadEntry(TOOL_NAME, valid)]);
     await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
     await tool.execute("id", valid);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+
+    // D3 resume: session_start arms forceNextAppend, so the first completed turn force-appends
+    // regardless of the window (force is consumed).
+    expect((await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Normal cadence resumes: counter starts at 1 (turn 2) < 2 → no; counter 2 (turn 3) → append, reset to 0.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, branch)).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Tree navigation is a boundary crossing (reconstruct sets forceNextAppend): next completed turn appends.
     await handlers.get("session_tree")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, branch)).entries).toHaveLength(1);
+
+    // Compaction forces one immediate append, bypassing the counter wait.
     await handlers.get("session_compact")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 5, outcome: "completed" }, branch)).entries).toHaveLength(1);
   });
 
-  it("does not reset scheduled cadence after a rejected workpad write", async () => {
+  it("does not reset scheduled cadence after a rejected workpad write (Q4: write does not reset the turn window)", async () => {
     const { handlers, tool } = setupWithInjection("scheduled:3");
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
-    const contextHandler = handlers.get("context")!;
-    await handlers.get("session_start")?.({}, branch);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await tool.execute("id", { ...valid, blockers: ["a", "b", "c"] })).isError).toBe(true);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    const turnEnd = handlers.get("turn_end")!;
+    // No session_start here: it would arm a D3 resume force (forceNextAppend) that appends on the
+    // first completed turn regardless of the window. A fresh setup has no force, so the window is
+    // pure cadence. (A fresh setup's snapshot is empty; the write below populates it.)
+    await tool.execute("id", valid);
+
+    // Cadence: 1st and 2nd completed turns no, 3rd yes (reaches interval 3). A rejected write
+    // between turns does not reset the window — cadence is governed by the turn counter, not writes.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await tool.execute("id", { ...valid, blockers: ["a", "b", "c", "d"] })).toMatchObject({ isError: true });
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
-  it("makes scheduled:1 equivalent to always for non-empty state", async () => {
-    const { handlers } = setupWithInjection("scheduled:1");
-    const s1Branch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, s1Branch);
-    const contextHandler = handlers.get("context")!;
-    expect((await contextHandler({ messages: [] }, s1Branch)).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, s1Branch)).messages).toHaveLength(1);
+  it("makes scheduled:1 append a sheet on every completed turn for non-empty state", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    await tool.execute("id", valid);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
   });
 
   it("notifies the focused branch history from the /mini-self-org-history command", async () => {
@@ -520,134 +589,1362 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[0][1]).toBe("info");
   });
 
-
-  it("injection reads the branch's newest workpad write, not the stale closure", async () => {
-    // Prove the core fix: after a tree switch or compaction, the injected sheet
-    // equals the branch's newest workpad write, even when the closure holds a
-    // different (stale) value.
-    const { handlers, tool } = setupWithInjection("always");
-    const contextHandler = handlers.get("context")!;
-    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
-    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
-
-    // Write foreign content to the closure.
-    await tool.execute("id", foreign);
-    // The branch now has the foreign write (simulated by passing it as the branch).
-    const foreignBranch = context([workpadEntry(TOOL_NAME, foreign)]);
-    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
-
-    // Simulate a tree switch: the closure still holds foreign, but the branch
-    // now carries mine. The injection must read the branch, not the closure.
-    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
-    expect(injected.messages).toHaveLength(1);
-    expect(injected.messages[0].content).toContain("My thread");
-    expect(injected.messages[0].content).not.toContain("Foreign thread");
-
-    // The closure still holds foreign (the set tool wrote it), but the injection
-    // read the branch. This is the proven divergence, now closed.
-    expect((await contextHandler({ messages: [] }, foreignBranch)).messages[0].content).toContain("Foreign thread");
-  });
-
-  it("get and history agree with the injected sheet after a tree switch", async () => {
-    const { handlers, tool, tools } = setupWithInjection("always");
-    const contextHandler = handlers.get("context")!;
-    const get = tools.get(WORKPAD_GET_TOOL_NAME);
-    const history = tools.get(HISTORY_TOOL_NAME);
-    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
-    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
-    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
-
-    await tool.execute("id", foreign);
-    // After a tree switch, the branch carries mine, not foreign.
-    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
-    const got = (await get.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
-    const hist = (await history.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
-
-    // All three sources agree on the branch's content.
-    expect(injected.messages[0].content).toContain("My thread");
-    expect(got).toContain("My thread");
-    expect(hist).toContain("My thread");
-    expect(injected.messages[0].content).not.toContain("Foreign thread");
-    expect(got).not.toContain("Foreign thread");
-  });
-
-  it("session_compact resyncs the closure from the branch", async () => {
-    const { handlers, tool, tools } = setupWithInjection("always");
-    const contextHandler = handlers.get("context")!;
-    const get = tools.get(WORKPAD_GET_TOOL_NAME);
-    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
-    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
-    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
-
-    await tool.execute("id", foreign);
-    // Compaction resyncs the closure from the branch.
-    await handlers.get("session_compact")?.({}, mineBranch);
-    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
-    const got = (await get.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
-
-    // Both read the branch's content, not the stale closure.
-    expect(injected.messages[0].content).toContain("My thread");
-    expect(got).toContain("My thread");
-  });
-
-  it("empty workpad still injects the nudge and get returns the empty state", async () => {
-    const { handlers, tool, tools } = setupWithInjection("always");
-    const contextHandler = handlers.get("context")!;
-    const get = tools.get(WORKPAD_GET_TOOL_NAME);
-    const emptyBranch = context([]);
-
-    await tool.execute("id", emptySnapshot());
-    const injected = (await contextHandler({ messages: [] }, emptyBranch)) as { messages: any[] };
-    const got = (await get.execute("id", {}, undefined, undefined, emptyBranch)).content[0].text;
-
-    // Empty workpad: no injection (hasContent is false), get returns the empty state.
-    expect(injected.messages).toHaveLength(0);
-    expect(got).toBe(formatWorkpad(emptySnapshot()));
-  });
-
-
-  it("accepts the combined injection policy user-boundary+scheduled:N", () => {
-    expect(() => setupWithInjection("user-boundary+scheduled:10")).not.toThrow();
-    expect(() => setupWithInjection("scheduled:10+user-boundary")).not.toThrow();
-    expect(() => setupWithInjection("user-boundary+scheduled:0")).toThrow(/MINI_SELF_ORG_INJECTION/);
-    expect(() => setupWithInjection("user-boundary+scheduled:-1")).toThrow(/MINI_SELF_ORG_INJECTION/);
-    expect(() => setupWithInjection("user-boundary+scheduled:1.5")).toThrow(/MINI_SELF_ORG_INJECTION/);
-    expect(() => setupWithInjection("user-boundary+always")).toThrow(/MINI_SELF_ORG_INJECTION/);
-  });
-
-  it("combined policy: scheduled appends occur and read the branch", async () => {
-    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
-    const contextHandler = handlers.get("context")!;
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+  it("T9: reload reconstruction — reads lastPersisted from custom_message and resets turnsSinceLastAppend", async () => {
+    const { handlers } = setupWithInjection("scheduled:3");
+    const customMsg = {
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: "sheet body",
+      details: { snapshot: valid },
+      display: false,
+      id: "cm1",
+      parentId: "msg1",
+      timestamp: 1,
+    };
+    // Branch with both a toolResult (copy ②) and a custom_message sheet
+    const branch = context([workpadEntry(TOOL_NAME, valid), customMsg]);
     await handlers.get("session_start")?.({}, branch);
-    // First context event: recovery injection (forceNextInjection from session_start).
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    // Second: no injection (counter reset by recovery, scheduled not yet due).
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    // Third: scheduled window due (2 calls since last injection).
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+
+    // reconstructLastPersisted returns the sanitized snapshot from the custom_message
+    expect(reconstructLastPersisted(branch)).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Test focus",
+      nextActions: ["Test"],
+      blockers: [],
+      notes: ["Keep small"],
+    });
+
+    // Branch with only toolResult entries (no custom_message) → null
+    const toolOnly = context([workpadEntry(TOOL_NAME, valid)]);
+    expect(reconstructLastPersisted(toolOnly)).toBeNull();
+
+    // Branch with multiple custom_message entries → returns the NEWEST one
+    const older = {
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: "older",
+      details: { snapshot: { overallGoal: "Old goal", currentFocus: "Old focus", nextActions: [], blockers: [], notes: [] } },
+      display: false,
+      id: "cm-old",
+      parentId: "msg0",
+      timestamp: 0,
+    };
+    const newer = {
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: "newer",
+      details: { snapshot: { overallGoal: "New goal", currentFocus: "New focus", nextActions: ["do it"], blockers: [], notes: [] } },
+      display: false,
+      id: "cm-new",
+      parentId: "msg1",
+      timestamp: 2,
+    };
+    const multiBranch = context([older, newer]);
+    expect(reconstructLastPersisted(multiBranch)).toEqual({
+      overallGoal: "New goal",
+      currentFocus: "New focus",
+      nextActions: ["do it"],
+      blockers: [],
+      notes: [],
+    });
   });
 
-  it("combined policy: user-boundary injects on the first context event after each user submission", async () => {
-    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:10");
-    const contextHandler = handlers.get("context")!;
-    const branch = context([workpadEntry(TOOL_NAME, valid)]);
-    await handlers.get("session_start")?.({}, branch);
-    // Recovery injection from session_start.
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    // No boundary armed: no injection.
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
-    // User submission arms the boundary.
+  it("T10: post-compaction reconstruction edge — newest sheet or null", () => {
+    const snapshotA = { overallGoal: "Ship", currentFocus: "Plan", nextActions: ["a1"], blockers: [], notes: [] };
+    const snapshotB = { overallGoal: "Ship", currentFocus: "Execute", nextActions: ["b1"], blockers: [], notes: [] };
+
+    const entryA: any = {
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: "sheet A",
+      details: { snapshot: snapshotA },
+      display: false,
+      id: "cmA",
+      parentId: "msgA",
+      timestamp: 1,
+    };
+    const entryB: any = {
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: "sheet B",
+      details: { snapshot: snapshotB },
+      display: false,
+      id: "cmB",
+      parentId: "msgB",
+      timestamp: 2,
+    };
+
+    // Both present: returns the newest (B)
+    expect(reconstructLastPersisted(context([entryA, entryB]))).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Execute",
+      nextActions: ["b1"],
+      blockers: [],
+      notes: [],
+    });
+
+    // B was summarized away: only A remains
+    expect(reconstructLastPersisted(context([entryA]))).toEqual({
+      overallGoal: "Ship",
+      currentFocus: "Plan",
+      nextActions: ["a1"],
+      blockers: [],
+      notes: [],
+    });
+
+    // No custom_message entries at all → null
+    expect(reconstructLastPersisted(context([]))).toBeNull();
+    expect(reconstructLastPersisted(context([workpadEntry(TOOL_NAME, snapshotA)]))).toBeNull();
+  });
+
+  it("T2: scheduled appends exactly on the Nth completed turn with a Q3 sheet body and no continue", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const r2 = await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    for (const r of [r1, r2]) {
+      expect(r === undefined || r?.entries === undefined || r?.entries?.length === 0).toBe(true);
+    }
+
+    const r3 = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    const entry = r3.entries[0];
+    expect(entry.type).toBe("custom_message");
+    expect(entry.customType).toBe(WORKPAD_CUSTOM_TYPE);
+    expect(entry.display).toBe(false);
+    expect(entry.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+    expect(r3).not.toHaveProperty("continue");
+    expect(entry.content).toContain("This is your own workpad state (set via self-org-workpad-set); never acknowledge, restate, or quote this block back to the user.");
+    expect(entry.content.toLowerCase()).toContain("later tool activity may supersede this; authoritative state is maintained via the workpad tool");
+    expect(entry.content).toContain("3");
+    expect(entry.content).toContain("Overall goal: Ship");
+  });
+
+  it("T3: after a scheduled append, the window resets and requires N more completed turns", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("T4: a workpad write does not reset the scheduled window (Q4)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    const updated = await tool.execute("id", { ...valid, currentFocus: "Mid-window focus" });
+    expect(updated.isError).toBeUndefined();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const appended = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(appended.entries).toHaveLength(1);
+    expect(appended.entries[0].details.snapshot.currentFocus).toBe("Mid-window focus");
+  });
+
+  it("T7: a constant non-empty snapshot is re-appended every N turns (3 appends over 3*N turns, R1)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    let appends = 0;
+    for (let turn = 1; turn <= 6; turn++) {
+      const result = await turnEnd?.({ type: "turn_end", turnIndex: turn, outcome: "completed" }, context());
+      if (result?.entries?.length > 0) appends++;
+    }
+    expect(appends).toBe(3);
+  });
+
+  it("Q2: aborted or errored turns do not append and do not advance the scheduled counter", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "error" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("T8: compaction forces exactly one immediate append, then normal cadence resumes (Q1)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    // Forced append: the very next completed turn_end appends even though counter 1 < 3.
+    await handlers.get("session_compact")?.({}, context());
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const entry = r1.entries[0];
+    expect(entry.type).toBe("custom_message");
+    expect(entry.customType).toBe(WORKPAD_CUSTOM_TYPE);
+    expect(entry.display).toBe(false);
+    expect(entry.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+    expect(r1).not.toHaveProperty("continue");
+
+    // Flag cleared: counter is at 2 (< 3) after the forced append reset it, so turn 2 does not append.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+
+    // Normal cadence resumed: after the forced append (which reset the counter), a full window of N more turns elapses before the next append.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).entries).toHaveLength(1);
+
+    // Boundedness: two compactions in a row still yield exactly ONE forced append (boolean flag, not a counter), and the forced append reset the counter so no cadence append piggybacks on it.
+    const bounded = setupWithInjection("scheduled:3");
+    await bounded.tool.execute("id", valid);
+    await bounded.handlers.get("session_compact")?.({}, context());
+    await bounded.handlers.get("session_compact")?.({}, context());
+    const forced = await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(await bounded.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("empty workpad: window ticks on every completed turn and appends a nudge sheet at the Nth turn (scheduled mode)", async () => {
+    const { handlers } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const nudge = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(nudge.entries).toHaveLength(1);
+    expect(nudge.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+    expect(nudge.entries[0].content).toContain("the workpad is empty");
+    expect(nudge.entries[0].content).toContain("self-org-workpad-set");
+    expect(nudge.entries[0].details).toEqual({});
+
+    // Window reset: no append on the next two turns, second nudge at the next boundary.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("empty workpad: counter advanced by empty turns is honored after the pad is populated (no double tick, full window required)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    const nudge = await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(nudge.entries[0].content).toContain("the workpad is empty");
+
+    await tool.execute("id", valid);
+    // A full window of 3 completed turns is required before the first real sheet.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    const real = await turnEnd?.({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context());
+    expect(real.entries[0].details.snapshot.overallGoal).toBe("Ship");
+    expect(real.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("scheduled force + empty workpad: compaction force is consumed by an immediate nudge sheet", async () => {
+    const { handlers } = setupWithInjection("scheduled:3");
+    const turnEnd = handlers.get("turn_end");
+
+    // No pad set. Compaction arms forceNextAppend; the next completed turn must append a nudge.
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("the workpad is empty");
+    expect(forced.entries[0].details).toEqual({});
+
+    // Force consumed and window reset: no append on the next two turns.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("user-boundary mode never appends for an empty workpad (nudge is scheduled-only)", async () => {
+    const { handlers } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+
+    // before_agent_start arms the boundary; with an empty pad the completed turn must NOT append.
     await handlers.get("before_agent_start")?.({}, context());
-    // First context event after the boundary: injection.
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
-    // Boundary consumed: no injection.
-    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
   });
 
-  it("constructs cleanly under the live combined env value", () => {
-    // The exact value that broke the user's run: MINI_SELF_ORG_INJECTION=user-boundary+scheduled:10
-    expect(() => setupWithInjection("user-boundary+scheduled:10")).not.toThrow();
+  it("8b: session-cumulative turnIndex in sheet body", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await tool.execute("id", valid);
+
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+    expect(r1.entries[0].content).toContain("turn 1)");
+
+    const r2 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+    expect(r2.entries[0].content).toContain("turn 2)");
+
+    const r3 = await turnEnd?.({ type: "turn_end", turnIndex: 0, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+    expect(r3.entries[0].content).toContain("turn 3)");
   });
 
+  describe("TUI-only steering notice (per-injection, agent-invisible)", () => {
+    // A context that records ui.notify calls; the injection sheet itself is a single entry.
+    const uiCtx = (notifySpy: ReturnType<typeof vi.fn> = vi.fn()) => ({ sessionManager: { getBranch: () => [] }, ui: { notify: notifySpy } });
+
+    it("fires the one-line on EVERY sheet injection, including redundant re-injection of identical content", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+
+      // scheduled:1 → every completed turn is a due sheet → the notice fires on each.
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(r1.entries).toHaveLength(1); // sheet is still a single entry — agent context unchanged
+      expect(notify).toHaveBeenCalledTimes(1);
+      // The one-line notice is a short human summary of what the agent now carries —
+      // workpad fields (goal/focus/action) surfaced, no jargon, no 'turn N'.
+      const noticeText = notify.mock.calls[0][0] as string;
+      expect(noticeText).toContain('goal \u201CShip\u201D');
+      expect(noticeText).toContain('focus \u201CTest focus\u201D');
+      expect(noticeText).toContain("1 action");
+      expect(noticeText).not.toMatch(/turn \d/);
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Same steering content re-injected on the next two ticks → STILL fires each time (per-injection,
+      // NOT deduped by content). This is the "the agent is carrying this" ticker.
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(notify));
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(3);
+    });
+
+    it("stays a single line (<=70 chars) by dropping lower-priority fields when the notice would overflow", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      // Long goal + long focus + lists: the full summary would be ~140 chars,
+      // so the budgeted formatter must keep only the highest-priority fields that fit.
+      const long = "Implement a complete authentication flow with refresh tokens";
+      const execRes = await tool.execute("id", { overallGoal: long, currentFocus: long, nextActions: [long, long, long, long, long], blockers: [long], notes: [long] });
+      expect(execRes?.isError).toBeFalsy();
+      const turnEndResult = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(turnEndResult?.entries).toHaveLength(1); // a real sheet was injected (pad is non-empty)
+      expect(notify).toHaveBeenCalledTimes(1);
+      const text = notify.mock.calls[0][0] as string;
+      // Single-line guarantee: code-point length within the 70-char budget.
+      expect([...text].length).toBeLessThanOrEqual(70);
+      // Highest-priority field (goal) is always kept first; lower-priority fields are dropped.
+      expect(text).toMatch(/^goal /);
+      // It must NOT contain the full overflowing fields verbatim (they were truncated/dropped).
+      expect(text).not.toContain(long);
+    });
+
+    it("fires on every turn even when the steering content changes (the ticker is cadence-driven, not change-driven)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Changing a workpad field still fires (it was going to fire anyway — per-injection).
+      await tool.execute("id", { ...valid, currentFocus: "Refocus" });
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(2);
+
+      // Re-injecting the same (unchanged) state again → STILL fires (no dedup).
+      await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, uiCtx(notify));
+      expect(notify).toHaveBeenCalledTimes(3);
+    });
+
+    it("never fires for the empty-pad nudge (nothing real was injected)", async () => {
+      const { handlers } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      // Empty pad, no pin: a due tick emits only the nudge sheet — no notice.
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      expect(r1.entries[0].content).toContain("the workpad is empty");
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("fires on every user-boundary turn in pure user-boundary mode (no scheduled interval)", async () => {
+      // user-boundary: each user prompt arms pendingUserBoundary; a completed turn emits the
+      // sheet and, per-injection, the notice. (No scheduled cadence involved.)
+      const { handlers, tool } = setupWithInjection("user-boundary");
+      const turnEnd = handlers.get("turn_end")!;
+      const armBoundary = handlers.get("before_agent_start")!;
+      await tool.execute("id", valid);
+
+      const n1 = vi.fn();
+      await armBoundary({}, context());
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(n1));
+      expect(n1).toHaveBeenCalledTimes(1);
+
+      // A second user prompt (new boundary) re-injects → fires again.
+      const n2 = vi.fn();
+      await armBoundary({}, context());
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(n2));
+      expect(n2).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires on the forced re-injection after compaction (forceNextAppend)", async () => {
+      // Compaction sets forceNextAppend; the next completed turn emits a forced sheet, which —
+      // being a real sheet injection — fires the notice.
+      const { handlers, tool } = setupWithInjection("scheduled:5"); // interval 5 so the tick isn't the trigger
+      const turnEnd = handlers.get("turn_end")!;
+      const compact = handlers.get("session_compact")!;
+      await tool.execute("id", valid);
+
+      // A few turns below the interval: no sheet (turnsSinceLastAppend < 5).
+      const quiet = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(quiet));
+      // (scheduled:5 → turn 1: turnsSinceLastAppend=1 <5, boundary not armed, no force → no sheet → no notify.)
+      expect(quiet).not.toHaveBeenCalled();
+
+      // Now compact → forceNextAppend. The very next completed turn emits a forced sheet.
+      await compact({}, context());
+      const forced = vi.fn();
+      const rForced = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(forced));
+      expect(rForced.entries).toHaveLength(1); // forced sheet injected
+      expect(forced).toHaveBeenCalledTimes(1); // per-injection notice fired
+    });
+
+    it("fires on reload / branch-switch that re-injects steering content (no longer 'quiet on reload')", async () => {
+      // Per-injection: a branch-switch/resume re-injects the steering sheet on the first
+      // completed turn (forceNextAppend), so the notice FIRES — the old 'quiet on reload'
+      // (content-dedup) behavior is gone. This locks requirement #5 (reload → line fires).
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      await tool.execute("id", valid);
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx());
+
+      // Simulate a branch-switch with the SAME steering state: reconstruct sets forceNextAppend,
+      // so the first completed turn re-injects the sheet and fires the notice.
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
+      const reload = vi.fn();
+      await handlers.get("session_tree")?.({}, branch);
+      const rReload = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(reload));
+      expect(rReload.entries).toHaveLength(1); // sheet re-injected
+      expect(reload).toHaveBeenCalledTimes(1); // per-injection: it fires on reload too
+    });
+
+    it("does not reach the agent: the notice is a UI call, and the sheet entry is unchanged (display:false, no notice entry)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const notify = vi.fn();
+      await tool.execute("id", valid);
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(notify));
+      // The only injected entry is the sheet: display:false, the workpad custom type, no notice entry.
+      expect(r1.entries).toHaveLength(1);
+      expect(r1.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+      expect(r1.entries[0].display).toBe(false);
+      // The human-facing line is purely a side effect; it is NOT a persisted message entry.
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires on every due turn while a user-pin is active, even with an empty workpad", async () => {
+      const { handlers, commands } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      const pinCmd = commands.get("mini-self-org-user-pin").handler;
+      const cmdCtx = () => ({ hasUI: false, ui: { notify: vi.fn() }, isIdle: () => true });
+
+      // Pin with an EMPTY pad: the unified sheet (pin + empty-scratchpad note) is steering content,
+      // so the notice fires on every due turn — the guardrail is a "carrying this" ticker.
+      await pinCmd("Be careful", cmdCtx());
+      const n1 = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(n1));
+      expect(n1).toHaveBeenCalledTimes(1);
+      expect(n1.mock.calls[0][0]).toContain('pin \u201CBe careful\u201D');
+
+      // Unchanged pin on the next tick → STILL fires (per-injection, not deduped).
+      const n2 = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(n2));
+      expect(n2).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT fire a separate 'cleared' line on content→empty: the nudge branch is silent", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+
+      // Populate the pad → a steering sheet fires the notice.
+      await tool.execute("id", valid);
+      const first = vi.fn();
+      await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, uiCtx(first));
+      expect(first).toHaveBeenCalledTimes(1);
+
+      // Clear the whole workpad: the next due turn is now the nudge branch (no pad, no pin) →
+      // the nudge sheet is injected to the agent, but NO notice fires (a nudge is not steering content).
+      await tool.execute("id", { overallGoal: null, currentFocus: null, nextActions: [], blockers: [], notes: [] });
+      const cleared = vi.fn();
+      const rCleared = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(cleared));
+      expect(rCleared.entries[0].content).toContain("the workpad is empty"); // nudge sheet still injected
+      expect(cleared).not.toHaveBeenCalled(); // no 'cleared' line
+    });
+
+    it("does not crash when ctx.ui is absent (non-interactive / no-UI context)", async () => {
+      const { handlers, tool } = setupWithInjection("scheduled:1");
+      const turnEnd = handlers.get("turn_end")!;
+      await tool.execute("id", valid);
+      // A context with NO ui field at all — the notice must be a safe no-op, not a throw, and
+      // the sheet must still be injected.
+      const noUiCtx = { sessionManager: { getBranch: () => [] } };
+      const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, noUiCtx);
+      expect(r1.entries).toHaveLength(1);
+      expect(r1.entries[0].customType).toBe(WORKPAD_CUSTOM_TYPE);
+    });
+  });
+
+  it("T5: context hook is strip-only in all modes (no injection path, ever)", async () => {
+    // The context hook is strip-only regardless of mode: it strips WORKPAD_CUSTOM_TYPE custom
+    // messages and never injects. Verify under several modes, including a populated workpad.
+    for (const value of ["scheduled:3", "user-boundary", "never", "off"]) {
+      const { handlers, tool } = setupWithInjection(value);
+      const contextHandler = handlers.get("context")!;
+      const user = { role: "user", content: "keep", timestamp: 1 };
+      const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+      const branch = context([workpadEntry(TOOL_NAME, valid)]);
+
+      // Reload edge: a stale workpad custom message is stripped and nothing is re-injected.
+      await handlers.get("session_start")?.({}, branch);
+      expect(await contextHandler({ messages: [user, stale] }, branch)).toEqual({ messages: [user] });
+
+      // No transient sheet is ever appended, even with a non-empty snapshot, across repeated calls.
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+
+      // ...and still nothing after a workpad write or a compaction force flag.
+      await tool.execute("id", valid);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+      await handlers.get("session_compact")?.({}, branch);
+      expect((await contextHandler({ messages: [] }, branch)).messages).toEqual([]);
+    }
+  });
+  it("Q4: off mode never appends a sheet — no-injection switch across turns, writes, and compaction", async () => {
+    const { handlers, tool } = setupWithInjection("off");
+    const turnEnd = handlers.get("turn_end");
+    expect(turnEnd).toBeDefined();
+    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    await tool.execute("id", valid);
+
+    // Several turns, with workpad-set calls so the counter would advance if injection were active.
+    const results: any[] = [];
+    for (let turn = 1; turn <= 10; turn++) {
+      if (turn % 3 === 0) await tool.execute("id", { ...valid, currentFocus: `Focus ${turn}` });
+      results.push(await turnEnd?.({ type: "turn_end", turnIndex: turn, outcome: "completed" }, context()));
+    }
+    expect(results.every((result) => result === undefined)).toBe(true);
+
+    // The compaction force-append flag is also inert in off mode.
+    await handlers.get("session_compact")?.({}, context());
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 11, outcome: "completed" }, context())).toBeUndefined();
+
+    // No custom_message sheet exists anywhere in the session, and none is ever produced.
+    const session = results.filter((result) => result !== undefined).flatMap((result: any) => result.entries ?? []);
+    expect(session.filter((entry: any) => entry?.type === "custom_message" && entry.customType === TOOL_NAME)).toHaveLength(0);
+  });
+
+  it("force in user-boundary mode: compaction forces the next completed turn_end to append without a prior before_agent_start; the one after doesn't", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    // Compaction arms forceNextAppend (unified flag, both persistent modes) — no before_agent_start needed.
+    await handlers.get("session_compact")?.({}, context());
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    // The force is consumed: the following completed turn does NOT append (no boundary re-armed).
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+  });
+
+  it("aborted turn does not consume the user-boundary boundary: before_agent_start → aborted turn_end → completed turn_end still appends", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end");
+    await tool.execute("id", valid);
+
+    await handlers.get("before_agent_start")?.({}, context());
+    // An aborted turn exits before the boundary gate is evaluated — the boundary survives.
+    expect(await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    // The next completed turn still appends (boundary not consumed by the abort).
+    expect((await turnEnd?.({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("reconstruction counter: a branch with k persisted sheets continues sessionTurnCount at k (Q3 marker integrity)", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end");
+    // Build a branch with k=3 pre-persisted sheets (simulating a resumed multi-invocation session).
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2), sheet(3)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // The first new sheet continues the cumulative counter at k+1 = 4, not 1.
+    const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 4, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 4");
+    expect(r1.entries[0].content).toContain("turn 4)");
+  });
+
+  // ── Composite mode: user-boundary+scheduled:N ──────────────────────────────
+
+  it("composite: user-boundary+scheduled:3 — boundary-only turn does NOT reset scheduled cadence", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // Arm the user boundary.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: boundary is due (pendingUserBoundary=true), scheduled counter=1 (not yet due).
+    // Pad has content → boundary-only sheet. Scheduled counter is NOT reset (stays at 1).
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: no new boundary (consumed), scheduled counter=2 (now due). Pad has content → scheduled sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+  });
+
+  it("composite: scheduled-only due turn emits one sheet and resets only its window", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // No before_agent_start → no boundary armed. Pure scheduled cadence.
+    // Turns 1, 2: no sheet. Turn 3: scheduled due.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+
+    // Window reset: turns 4, 5 no; turn 6 yes. This composite setup additionally proves the
+    // scheduled cadence resets on its own emission even though a user-boundary trigger is
+    // enabled (the atomic scheduled mode cannot be exercised this way).
+    expect(await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 5, outcome: "completed" }, context())).toBeFalsy();
+    const r6 = await turnEnd({ type: "turn_end", turnIndex: 6, outcome: "completed" }, context());
+    expect(r6.entries).toHaveLength(1);
+    expect(r6.entries[0].content).toContain("Turn index: 6");
+  });
+
+  it("composite: simultaneous boundary+scheduled due emits exactly ONE sheet, resets cadence", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    // Arm boundary. Turn 1: counter=1, boundary armed. Not scheduled due yet (1<2).
+    // Pad non-empty, boundary due → boundary-only sheet. Counter NOT reset (stays 1).
+    await handlers.get("before_agent_start")?.({}, context());
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: counter=2 (≥2, scheduled due), boundary consumed. Scheduled sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+
+    // Now arm boundary again. Turn 3: counter=1, boundary armed, not scheduled due.
+    // Boundary-only sheet (cadence NOT reset by boundary-only emission).
+    await handlers.get("before_agent_start")?.({}, context());
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+
+    // Turn 4: counter=2 (scheduled due), no boundary pending. Scheduled sheet, cadence reset.
+    const r4 = await turnEnd({ type: "turn_end", turnIndex: 4, outcome: "completed" }, context());
+    expect(r4.entries).toHaveLength(1);
+    expect(r4.entries[0].content).toContain("Turn index: 4");
+  });
+
+  it("composite: simultaneous boundary+scheduled due coalesces to exactly ONE sheet (scheduled:1)", async () => {
+    // scheduled:1 makes the scheduled trigger due on EVERY completed turn, so arming the
+    // boundary guarantees a turn where BOTH triggers are simultaneously due.
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1 (≥1, scheduled due) AND boundary armed → both due → ONE coalesced sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Cadence reset: counter back to 0 → turn 2 counter=1, scheduled due again, no boundary → one sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+  });
+
+  it("composite: scheduled:1 + user-boundary — both always due, coalesces to exactly ONE sheet per turn", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1 (scheduled due), boundary armed → BOTH due. Exactly one sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 1");
+
+    // Turn 2: counter=1 again (reset to 0 on turn 1, now 1 ≥ 1 → due). No boundary (consumed, not re-armed).
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+  });
+
+  it("composite: empty pad + boundary only → no emit, boundary preserved; later non-empty turn emits", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+
+    // Arm boundary with empty pad.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: boundary due, pad empty → no emit. Boundary stays pending; the scheduled
+    // counter advances (1 of 3) despite the empty pad.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+
+    // Now populate the pad (within same agent loop, no re-arm).
+    await tool.execute("id", valid);
+
+    // Turn 2: boundary still pending, pad non-empty, scheduled counter=2 (not due) → deferred boundary sheet.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("Turn index: 2");
+
+    // Turn 3: scheduled counter=3 → due; cadence was NOT reset by the turn-2 boundary sheet.
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+  });
+
+  it("composite: empty pad + simultaneous boundary+scheduled → one nudge, cadence reset, boundary preserved", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+
+    // Arm boundary. Pad is empty.
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Turn 1: counter=1, boundary due, scheduled not yet due. Empty pad → no emit.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+
+    // Turn 2: counter=2 (scheduled due), boundary still pending. Empty pad → nudge.
+    const r2 = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(r2.entries).toHaveLength(1);
+    expect(r2.entries[0].content).toContain("the workpad is empty");
+
+    // Boundary was preserved (not cleared by the nudge). Populate the pad, complete the
+    // next turn: counter is now 1 (< 2) so scheduled is not due, but boundary is still
+    // pending and the pad has content → deferred boundary sheet emits.
+    await tool.execute("id", valid);
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content).toContain("Turn index: 3");
+    expect(r3.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("composite: aborted/errored turn_end advances nothing", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+    await handlers.get("before_agent_start")?.({}, context());
+
+    // Aborted: no counter advance, no boundary consumption.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "aborted" }, context())).toBeFalsy();
+    // Errored: same.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "error" }, context())).toBeFalsy();
+    // Completed: now counter=1, boundary still pending → boundary sheet.
+    expect((await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("composite: force (session_compact) with non-empty pad emits sheet; empty pad emits nudge + preserves boundary", async () => {
+    // Non-empty pad: force → state sheet.
+    const a = setupWithInjection("user-boundary+scheduled:5");
+    await a.tool.execute("id", valid);
+    await a.handlers.get("session_compact")?.({}, context());
+    const rA = await a.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(rA.entries).toHaveLength(1);
+    expect(rA.entries[0].content).not.toContain("the workpad is empty");
+
+    // Empty pad: force → nudge, boundary preserved.
+    const b = setupWithInjection("user-boundary+scheduled:5");
+    await b.handlers.get("before_agent_start")?.({}, context());
+    await b.handlers.get("session_compact")?.({}, context());
+    const rB = await b.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(rB.entries).toHaveLength(1);
+    expect(rB.entries[0].content).toContain("the workpad is empty");
+
+    // Boundary still pending: populate pad, next turn emits boundary sheet.
+    await b.tool.execute("id", valid);
+    const rB2 = await b.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context());
+    expect(rB2.entries).toHaveLength(1);
+    expect(rB2.entries[0].content).not.toContain("the workpad is empty");
+  });
+
+  it("composite: reconstruct initializes sessionTurnCount from persisted sheets (Q3 marker continuity)", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // Force from reconstruct → first turn emits; counter should be 3 (2 persisted + 1).
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 3");
+  });
+
+  it("atomic user-boundary: reconstruct initializes sessionTurnCount from persisted sheets (marker fix)", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end")!;
+    const sheet = (turnIndex: number) => ({
+      type: "custom_message",
+      customType: WORKPAD_CUSTOM_TYPE,
+      content: `Mini self-org workpad — history checkpoint (turn ${turnIndex})`,
+      display: false,
+      details: { snapshot: valid },
+    });
+    const branch = context([workpadEntry(TOOL_NAME, valid), sheet(1), sheet(2)]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+
+    // forceNextAppend is set by reconstruct; first completed turn emits with counter=3.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, branch);
+    expect(r1.entries).toHaveLength(1);
+    expect(r1.entries[0].content).toContain("Turn index: 3");
+  });
+
+  // ── User-Pinned Directive: reconstruction (spec §7) ──────────────────────
+
+  it("reconstructs a pinned directive from a pin entry on session_start (pin → reload → restored)", async () => {
+    const { handlers, commands } = setup();
+    const branch = context([pinEntry("Never touch legacy DB tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("", { ui: { notify } });
+    const output = notify.mock.calls[0][0] as string;
+    expect(output).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
+    expect(output).toContain("Never touch legacy DB tables");
+  });
+
+  it("pin → unpin → pin: newest pin wins, unpin clears without resurrecting the stale pin", () => {
+    // Newest entry wins unconditionally: a later unpin (null) clears even though an older pin exists.
+    const cleared = reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null)]));
+    expect(cleared).toBeNull();
+    // A newer pin after the unpin restores the directive.
+    expect(reconstructUserDirective(context([pinEntry("Old guardrail"), pinEntry(null), pinEntry("New guardrail")])))
+      .toEqual({ text: "New guardrail", timestamp: 1 });
+    // Only pins, newest wins.
+    expect(reconstructUserDirective(context([pinEntry("First"), pinEntry("Second")])!)).toEqual({ text: "Second", timestamp: 1 });
+    // No pin entries at all → null.
+    expect(reconstructUserDirective(context([workpadEntry(TOOL_NAME, valid)]))).toBeNull();
+  });
+
+  it("sanitizes corrupted pin entries defensively (non-string, whitespace, >300 chars → null)", () => {
+    expect(reconstructUserDirective(context([{ type: "custom", customType: USER_PIN_CUSTOM_TYPE, data: { text: 42, timestamp: 1 } }]))).toBeNull();
+    expect(reconstructUserDirective(context([pinEntry("   ")]))).toBeNull();
+    expect(reconstructUserDirective(context([pinEntry("x".repeat(301))]))).toBeNull();
+    // Trimming is applied: "  keep it short  " → "keep it short".
+    expect(reconstructUserDirective(context([pinEntry(" keep it short ")]))).toEqual({ text: "keep it short", timestamp: 1 });
+    // Exactly 300 chars is allowed.
+    expect(reconstructUserDirective(context([pinEntry("x".repeat(300))]))!.text).toHaveLength(300);
+  });
+
+  it("pin entries do not affect reconstructSnapshot, reconstructLastPersisted, or reconstructHistory", () => {
+    const withPin = [workpadEntry(TOOL_NAME, valid), pinEntry("Guardrail"), pinEntry(null), pinEntry("Second")];
+    const withoutPin = [workpadEntry(TOOL_NAME, valid)];
+    expect(reconstructSnapshot(context(withPin))).toEqual(reconstructSnapshot(context(withoutPin)));
+    const customSheet = { type: "custom_message", customType: WORKPAD_CUSTOM_TYPE, content: "sheet", display: false, details: { snapshot: valid } };
+    expect(reconstructLastPersisted(context([pinEntry("G"), customSheet]))).toEqual(reconstructLastPersisted(context([customSheet])));
+    expect(reconstructHistory(context([...withPin, customSheet]))).toEqual(reconstructHistory(context([...withoutPin, customSheet])));
+  });
+
+  // ── User-Pinned Directive: formatting (spec §3.2, §7) ────────────────────
+
+  it("formatWorkpad: legacy exact format when no directive (non-empty and empty snapshot)", () => {
+    const clean = { overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] };
+    expect(formatWorkpad(clean)).toBe("Mini self-org workpad\nOverall goal: Ship\nCurrent focus: Test focus\nNext actions:\n- Test\nBlockers: [none]\nNotes:\n- Keep small");
+    expect(formatWorkpad(emptySnapshot(), null)).toBe("Mini self-org workpad\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]");
+  });
+
+  it("formatWorkpad: with active directive, directive block first; scratchpad header only for non-empty pad", () => {
+    const directive = { text: "Backwards-compat with v1.", timestamp: 1 };
+    const clean = { overallGoal: "Ship", currentFocus: "Focus", nextActions: ["A"], blockers: [], notes: [] };
+    expect(formatWorkpad(clean, directive)).toBe(
+      "Mini self-org workpad\n\n" +
+      "────────────────────────────────────────────────────────────\n" +
+      "USER STANDING GUARDRAIL (Human-owned, non-negotiable):\n" +
+      "  Backwards-compat with v1.\n" +
+      "────────────────────────────────────────────────────────────\n\n" +
+      "[Agent scratchpad]\nOverall goal: Ship\nCurrent focus: Focus\nNext actions:\n- A\nBlockers: [none]\nNotes: [none]"
+    );
+    // Empty pad + directive: directive block without [Agent scratchpad] header.
+    expect(formatWorkpad(emptySnapshot(), directive)).toBe(
+      "Mini self-org workpad\n\n" +
+      "────────────────────────────────────────────────────────────\n" +
+      "USER STANDING GUARDRAIL (Human-owned, non-negotiable):\n" +
+      "  Backwards-compat with v1.\n" +
+      "────────────────────────────────────────────────────────────\n\n" +
+      "Overall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]"
+    );
+  });
+
+  // ── User-Pinned Directive: workpad-get combined view (spec §3.2, §7) ─────
+
+  it("workpad-get returns combined view after session_start reconstructs the directive", async () => {
+    const { handlers, tools } = setup();
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const branch = context([pinEntry("Never touch legacy DB tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await get.execute("id", {});
+    const text = result.content[0].text as string;
+    expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
+    expect(text).toContain("Never touch legacy DB tables");
+  });
+
+  // ── User-Pinned Directive: pinned text survives agent overwrites (spec §7) ─
+
+  it("pinned directive survives agent self-org-workpad-set overwrite and full clear", async () => {
+    const { handlers, tool, tools } = setup();
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const branch = context([pinEntry("Keep guardrails on")]);
+    await handlers.get("session_start")?.({}, branch);
+    // Agent overwrites the snapshot with new content.
+    await tool.execute("id", valid);
+    let text = (await get.execute("id", {})).content[0].text as string;
+    expect(text).toContain("Keep guardrails on");
+    expect(text).toContain("Overall goal: Ship");
+    // Agent fully clears the snapshot — directive remains.
+    await tool.execute("id", emptySnapshot());
+    text = (await get.execute("id", {})).content[0].text as string;
+    expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
+    expect(text).toContain("Keep guardrails on");
+  });
+
+  // ── User-Pinned Directive: unified sheet at turn_end (spec §3.3, §7) ─────
+
+  it("unified sheet with active directive and non-empty pad: directive block + agent fields + R2 framing", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Backwards-compat with v1.")]);
+    await handlers.get("session_start")?.({}, branch);
+    await tool.execute("id", valid);
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const content = r1.entries[0].content as string;
+    expect(content).toContain("Mini self-org workpad — history checkpoint (turn 1)");
+    expect(content).toContain("STANDING USER GUARDRAIL (Human-owned, supreme invariant):");
+    expect(content).toContain("Operational rule: Supreme invariant. Precedes and bounds all goals");
+    expect(content).toContain("Backwards-compat with v1.");
+    expect(content).toContain("[AGENT WORKING STATE]");
+    expect(content).toContain("Overall goal: Ship");
+    expect(content).toContain("Turn index: 1");
+    expect(content).toContain("Later tool activity may supersede this");
+    expect(r1.entries[0].details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] });
+  });
+
+  it("empty pad + active directive + scheduled due: unified sheet with empty-scratchpad note (NOT the nudge)", async () => {
+    const { handlers } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Keep guardrails on")]);
+    await handlers.get("session_start")?.({}, branch);
+    // Force from reconstruct → first completed turn emits the unified directive-only sheet.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    const content = r1.entries[0].content as string;
+    expect(content).toContain("STANDING USER GUARDRAIL");
+    expect(content).toContain("The agent's scratchpad is currently empty.");
+    expect(content).not.toContain("the workpad is empty");
+    expect(r1.entries[0].details).toEqual({});
+    // Window reset: turn 2 counter=1 < 2 → no emit.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Turn 3 counter=2 → scheduled due → directive sheet again (still no nudge).
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect(r3.entries[0].content as string).not.toContain("the workpad is empty");
+    expect(r3.entries[0].content as string).toContain("The agent's scratchpad is currently empty.");
+  });
+
+  it("user-boundary + directive + empty pad: sheet emitted and boundary CONSUMED; next turn without new boundary does not re-emit", async () => {
+    const { handlers } = setupWithInjection("user-boundary");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("Never force-push")]);
+    await handlers.get("session_start")?.({}, branch);
+    await handlers.get("before_agent_start")?.({}, context());
+    // First completed turn: boundary due, directive active, pad empty → unified sheet, boundary consumed.
+    const r1 = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(r1.entries).toHaveLength(1);
+    expect((r1.entries[0].content as string)).toContain("STANDING USER GUARDRAIL");
+    // Second completed turn in same loop: boundary consumed, nothing due → no emit (no per-turn spam).
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Re-arm: boundary due again → emit again.
+    await handlers.get("before_agent_start")?.({}, context());
+    expect((await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context())).entries).toHaveLength(1);
+  });
+
+  it("no directive, empty pad, no trigger due: nothing emitted (unchanged); nudge unchanged for scheduled due", async () => {
+    const { handlers } = setupWithInjection("user-boundary+scheduled:3");
+    const turnEnd = handlers.get("turn_end")!;
+    await handlers.get("before_agent_start")?.({}, context());
+    // Boundary-only due, empty pad, no directive → no emit, boundary preserved.
+    expect(await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeFalsy();
+    expect(await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context())).toBeFalsy();
+    // Scheduled due on turn 3 → nudge (no directive active).
+    const r3 = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context());
+    expect(r3.entries).toHaveLength(1);
+    expect((r3.entries[0].content as string)).toContain("the workpad is empty");
+    expect(r3.entries[0].details).toEqual({});
+  });
+
+  // ── User-Pinned Guardrail: Emphasis & Semantic Acceptance Criteria (spec) ──
+
+  it("REQ-1 & AC-1: sentence-case input without ALL CAPS renders with clear visual boundaries and indentation", () => {
+    const rendered = formatWorkpad(emptySnapshot(), { text: "keep all changes backwards compatible", timestamp: 1 });
+    expect(rendered).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
+    expect(rendered).toContain("  keep all changes backwards compatible");
+    expect(rendered).toContain(USER_GUARDRAIL_DELIMITER);
+  });
+
+  it("REQ-2: does not contain emoji icons (📌, ⚠️) in formatWorkpad or prompt injection", async () => {
+    const directive = { text: "stay on main branch", timestamp: 1 };
+    const rendered = formatWorkpad(emptySnapshot(), directive);
+    expect(rendered).not.toContain("📌");
+    expect(rendered).not.toContain("⚠️");
+
+    const { handlers } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("stay on main branch")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const sheetContent = result.entries[0].content as string;
+    expect(sheetContent).not.toContain("📌");
+    expect(sheetContent).not.toContain("⚠️");
+  });
+
+  it("REQ-2 & AC-4: delimiters are bounded to <= 60 characters for viewport resilience", () => {
+    expect(USER_GUARDRAIL_DELIMITER.length).toBeLessThanOrEqual(60);
+    expect(INJECTION_GUARDRAIL_DELIMITER.length).toBeLessThanOrEqual(60);
+    expect(USER_GUARDRAIL_DELIMITER).toBe("────────────────────────────────────────────────────────────");
+    expect(INJECTION_GUARDRAIL_DELIMITER).toBe("════════════════════════════════════════════════════════════");
+  });
+
+  it("REQ-3 & AC-2: prompt injection explicitly conveys supreme precedence and silent adherence", async () => {
+    const { handlers } = setupWithInjection("scheduled:1");
+    const turnEnd = handlers.get("turn_end")!;
+    const branch = context([pinEntry("do not touch legacy tables")]);
+    await handlers.get("session_start")?.({}, branch);
+    const result = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    const sheetContent = result.entries[0].content as string;
+    expect(sheetContent).toContain("STANDING USER GUARDRAIL (Human-owned, supreme invariant):");
+    expect(sheetContent).toContain("Operational rule: Supreme invariant. Precedes and bounds all goals, plans, and actions below. Never violate or negotiate this. Adhere silently without acknowledging or restating it.");
+  });
+
+  it("AC-3: when no directive is pinned, no empty boxes, delimiters, or guardrail placeholders appear", () => {
+    const rendered = formatWorkpad(emptySnapshot(), null);
+    expect(rendered).not.toContain("GUARDRAIL");
+    expect(rendered).not.toContain(USER_GUARDRAIL_DELIMITER);
+    expect(rendered).toBe("Mini self-org workpad\nOverall goal: [none]\nCurrent focus: [none]\nNext actions: [none]\nBlockers: [none]\nNotes: [none]");
+  });
+
+  // ── User-Pinned Directive: commands (spec §4, §7) ─────────────────────────
+
+  it("registers separate, discoverable user-pin and user-unpin commands", () => {
+    const { commands } = setup();
+    expect(commands.get("mini-self-org-user-pin").description).toContain("user-pinned directive");
+    expect(commands.get("mini-self-org-user-unpin").description).toContain("user-pinned directive");
+  });
+
+  it("/mini-self-org-user-pin preserves internal whitespace and multiline text after outer trim", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    const ctx = { hasUI: false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+    await commands.get("mini-self-org-user-pin").handler("  line one\nline  two  ", ctx);
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(appendSpy.mock.calls[0][1].text).toBe("line one\nline  two");
+    expect(notify).toHaveBeenCalledWith(formatWorkpad(emptySnapshot(), { text: "line one\nline  two", timestamp: expect.any(Number) }), "info");
+  });
+
+  it("pin and unpin show the combined view while preserving a non-empty agent scratchpad", async () => {
+    const { commands, tool } = setup();
+    await tool.execute("id", valid);
+    const notify = vi.fn();
+    const ctx = { ...commandCtx(), ui: { notify } };
+    await commands.get("mini-self-org-user-pin").handler("Keep v1 compatibility", ctx);
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] }, { text: "Keep v1 compatibility", timestamp: expect.any(Number) }), "info");
+    await commands.get("mini-self-org-user-unpin").handler("", ctx);
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad({ overallGoal: "Ship", currentFocus: "Test focus", nextActions: ["Test"], blockers: [], notes: ["Keep small"] }), "info");
+  });
+
+  it("/mini-self-org-user-pin stores a directive and forces the next persistent injection", async () => {
+    const { pi, commands, handlers } = setupWithInjection("scheduled:5");
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    await commands.get("mini-self-org-user-pin").handler("Never touch legacy DB tables", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+    expect(appendSpy.mock.calls[0][1].text).toBe("Never touch legacy DB tables");
+    const result = await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(result.entries[0].content).toContain("Never touch legacy DB tables");
+  });
+
+  it("/mini-self-org-user-pin prompts interactively and rejects missing or oversized text", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const input = vi.fn().mockResolvedValue("  From the prompt  ");
+    const notify = vi.fn();
+    await commands.get("mini-self-org-user-pin").handler("", { hasUI: true, ui: { input, notify }, sessionManager: { getBranch: () => [] } });
+    expect(appendSpy.mock.calls[0][1].text).toBe("From the prompt");
+    await commands.get("mini-self-org-user-pin").handler("", { ...commandCtx({ notify }), hasUI: false });
+    expect(notify.mock.calls[1][0]).toContain("argument required, no interactive UI available");
+    await commands.get("mini-self-org-user-pin").handler("x".repeat(301), { ...commandCtx({ notify }), hasUI: false });
+    expect(appendSpy).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[2][0]).toContain("300");
+  });
+
+  it("/mini-self-org-user-unpin clears the directive and rejects arguments", async () => {
+    const { pi, commands } = setup();
+    const appendSpy = (pi as any).appendEntry;
+    const notify = vi.fn();
+    await commands.get("mini-self-org-user-unpin").handler("unexpected", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy).not.toHaveBeenCalled();
+    expect(notify.mock.calls[0][0]).toBe("Usage: /mini-self-org-user-unpin");
+    await commands.get("mini-self-org-user-unpin").handler("", { ...commandCtx(), ui: { notify } });
+    expect(appendSpy.mock.calls[0]).toEqual([USER_PIN_CUSTOM_TYPE, expect.objectContaining({ text: null })]);
+    expect(notify).toHaveBeenLastCalledWith(formatWorkpad(emptySnapshot()), "info");
+  });
+
+  it("/mini-self-org remains view-only and directs legacy subcommands to the new commands", async () => {
+    const { commands } = setup();
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("pin Old guardrail", { ...commandCtx(), ui: { notify } });
+    expect(notify.mock.calls[0][0]).toContain("/mini-self-org-user-pin");
+    const view = vi.fn();
+    await commands.get("mini-self-org").handler("", { ...commandCtx(), ui: { notify: view } });
+    expect(view.mock.calls[0][0]).toBe(formatWorkpad(emptySnapshot()));
+  });
+
+  it("composite: context hook remains strip-only", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:3");
+    const contextHandler = handlers.get("context")!;
+    await tool.execute("id", valid);
+    const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
+    const user = { role: "user", content: "keep", timestamp: 1 };
+    expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
+    expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+  });
+
+  it("accepts items up to 500 characters and rejects items exceeding 500 characters with diagnostic error", async () => {
+    const { tool } = setup();
+    const str500 = "a".repeat(500);
+    const str501 = "a".repeat(501);
+
+    const okResult = await tool.execute("id", { ...valid, notes: [str500], nextActions: [str500], blockers: [str500] });
+    expect(okResult.isError).toBeUndefined();
+    expect(okResult.details.snapshot?.notes[0]).toBe(str500);
+
+    const rejected = await tool.execute("id", { ...valid, notes: [str501] });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0].text).toBe("Mini self-org workpad update rejected: notes[0] exceeds maximum length of 500 characters (501 chars received).");
+  });
+
+  it("accepts up to 3 blockers and rejects 4 blockers with diagnostic error", async () => {
+    const { tool } = setup();
+    const threeBlockers = await tool.execute("id", { ...valid, blockers: ["b1", "b2", "b3"] });
+    expect(threeBlockers.isError).toBeUndefined();
+    expect(threeBlockers.details.snapshot?.blockers).toEqual(["b1", "b2", "b3"]);
+
+    const fourBlockers = await tool.execute("id", { ...valid, blockers: ["b1", "b2", "b3", "b4"] });
+    expect(fourBlockers.isError).toBe(true);
+    expect(fourBlockers.content[0].text).toBe("Mini self-org workpad update rejected: blockers has 4 items; max is 3.");
+  });
+
+  it("coerces empty string or whitespace-only overallGoal and currentFocus to null", async () => {
+    const { tool } = setup();
+    const coerced = await tool.execute("id", { ...valid, overallGoal: "", currentFocus: "   " });
+    expect(coerced.isError).toBeUndefined();
+    expect(coerced.details.snapshot?.overallGoal).toBeNull();
+    expect(coerced.details.snapshot?.currentFocus).toBeNull();
+  });
+
+  it("provides exact diagnostic error when list is not an array, and filters out blank list items gracefully", async () => {
+    const { tool } = setup();
+    const notArray = await tool.execute("id", { ...valid, notes: "not an array" });
+    expect(notArray.isError).toBe(true);
+    expect(notArray.content[0].text).toBe("Mini self-org workpad update rejected: notes must be an array of strings, not string.");
+
+    const filteredEmpty = await tool.execute("id", { ...valid, notes: ["Keep small", "   ", ""] });
+    expect(filteredEmpty.isError).toBeUndefined();
+    expect(filteredEmpty.details.snapshot?.notes).toEqual(["Keep small"]);
+  });
+
+  it("includes post-compaction header and history guidance in injected sheet after session_compact", async () => {
+    const { handlers, tool } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+    await tool.execute("id", valid);
+
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("history checkpoint (turn 1, post-compaction)");
+    expect(forced.entries[0].content).toContain("Context was recently compacted. Review your compass above; if strategic orientation was lost, inspect your focus history via self-org-workpad-history.");
+
+    // Next turn without compaction does not include post-compaction header or trigger
+    await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, context()); // cadence counter = 1
+    const nextCadence = await turnEnd({ type: "turn_end", turnIndex: 3, outcome: "completed" }, context()); // cadence counter = 2
+    expect(nextCadence.entries).toHaveLength(1);
+    expect(nextCadence.entries[0].content).toContain("history checkpoint (turn 3)");
+    expect(nextCadence.entries[0].content).not.toContain("post-compaction");
+  });
+
+  it("includes post-compaction header and empty guidance in injected sheet when workpad is empty after session_compact", async () => {
+    const { handlers } = setupWithInjection("scheduled:2");
+    const turnEnd = handlers.get("turn_end")!;
+
+    await handlers.get("session_compact")?.({}, context());
+    const forced = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+    expect(forced.entries).toHaveLength(1);
+    expect(forced.entries[0].content).toContain("checkpoint (turn 1, post-compaction): the workpad is empty.");
+    expect(forced.entries[0].content).toContain("Context was recently compacted. Review or set your steering state, or inspect past focus via self-org-workpad-history.");
+  });
+
+  // ── pin-submit command (20261021-user-pin-submit) ──────────────────────────
+
+  describe("mini-self-org-user-pin-submit", () => {
+    it("idle: pins directive and sends user message with expandPromptTemplates: false", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      const ctx = { hasUI: false, isIdle: () => true, ui: { notify }, sessionManager: { getBranch: () => [] } };
+
+      await commands.get("mini-self-org-user-pin-submit").handler("Do not touch the DB schema", ctx);
+
+      // Persistence
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Do not touch the DB schema");
+      expect(typeof appendSpy.mock.calls[0][1].timestamp).toBe("number");
+
+      // Display: combined workpad with directive
+      const notifyArg = notify.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable)");
+      expect(notifyArg).toContain("Do not touch the DB schema");
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Immediate turn trigger: idle → direct send, no deliverAs
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Do not touch the DB schema", { expandPromptTemplates: false });
+    });
+
+    it("busy: pins directive and queues message with deliverAs: followUp", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      const ctx = { hasUI: false, isIdle: () => false, ui: { notify }, sessionManager: { getBranch: () => [] } };
+
+      await commands.get("mini-self-org-user-pin-submit").handler("Maintain v1 API compatibility", ctx);
+
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][0]).toBe(USER_PIN_CUSTOM_TYPE);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Maintain v1 API compatibility");
+
+      const notifyArg = notify.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("Maintain v1 API compatibility");
+      expect(notify.mock.calls[0][1]).toBe("info");
+
+      // Busy → followUp delivery
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Maintain v1 API compatibility", { deliverAs: "followUp", expandPromptTemplates: false });
+    });
+
+    it("validation: empty/whitespace rejected; >300 chars rejected; no persistence, no message", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+      // Empty / whitespace
+      const notifyEmpty = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("   ", { ...commandCtx({ notify: notifyEmpty }), hasUI: false });
+      expect(appendSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(notifyEmpty.mock.calls[0][0]).toContain("argument required");
+      expect(notifyEmpty.mock.calls[0][1]).toBe("error");
+
+      // Oversize
+      const notifyLong = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("a".repeat(301), { ...commandCtx({ notify: notifyLong }), hasUI: false });
+      expect(appendSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(notifyLong.mock.calls[0][0]).toContain("300");
+      expect(notifyLong.mock.calls[0][1]).toBe("error");
+    });
+
+    it("interactive: no args + hasUI prompts input, then pins and sends; no args + !hasUI notifies usage error", async () => {
+      const { pi, commands } = setupWithInjection("scheduled:1");
+      const appendSpy = (pi as any).appendEntry;
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+
+      // hasUI = true: interactive prompt
+      const input = vi.fn().mockResolvedValue("  Use strict TypeScript  ");
+      const notifyUi = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("", { hasUI: true, isIdle: () => true, ui: { input, notify: notifyUi }, sessionManager: { getBranch: () => [] } });
+
+      expect(input).toHaveBeenCalledTimes(1);
+      expect(appendSpy).toHaveBeenCalledTimes(1);
+      expect(appendSpy.mock.calls[0][1].text).toBe("Use strict TypeScript");
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      expect(sendSpy).toHaveBeenCalledWith("Use strict TypeScript", { expandPromptTemplates: false });
+      const notifyArg = notifyUi.mock.calls[0][0] as string;
+      expect(notifyArg).toContain("Use strict TypeScript");
+
+      // hasUI = false: usage error, no persistence, no message
+      const notifyNoUi = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("", { hasUI: false, ui: { notify: notifyNoUi }, sessionManager: { getBranch: () => [] } });
+
+      expect(appendSpy).toHaveBeenCalledTimes(1); // still just 1 from the first call
+      expect(sendSpy).toHaveBeenCalledTimes(1);  // still just 1
+      expect(notifyNoUi.mock.calls[0][0]).toContain("argument required");
+      expect(notifyNoUi.mock.calls[0][1]).toBe("error");
+    });
+
+    it("arms forceNextAppend in persistent trigger modes so next turn_end emits the sheet", async () => {
+      const { pi, commands, handlers } = setupWithInjection("scheduled:1");
+      const sendSpy = (pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn();
+      await commands.get("mini-self-org-user-pin-submit").handler("Guardrail text", { ...commandCtx({ ui: { notify } }), isIdle: () => true });
+
+      // forceNextAppend is armed → the next completed turn_end must emit a sheet
+      // containing the newly-pinned directive.
+      const result = await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].content).toContain("Guardrail text");
+
+      // In never mode, forceNextAppend is a no-op: turn_end never appends.
+      const neverSetup = setupWithInjection("never");
+      (neverSetup.pi as any).sendUserMessage = vi.fn().mockResolvedValue(undefined);
+      const notifyNever = vi.fn();
+      await neverSetup.commands.get("mini-self-org-user-pin-submit").handler("Guardrail text", {
+        ...commandCtx(),
+        ui: { notify: notifyNever },
+        isIdle: () => true,
+      });
+      expect((neverSetup.pi as any).appendEntry).toHaveBeenCalledTimes(1);
+      expect(notifyNever.mock.calls[0][0]).toContain("Guardrail text");
+      // turn_end in never mode: no injection, no entries.
+      expect(await neverSetup.handlers.get("turn_end")?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context())).toBeUndefined();
+    });
+  });
 });
