@@ -582,7 +582,11 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
       pendingUserBoundary = true;
     }
   });
-  pi.on("session_compact", async () => {
+  // Resync the closure from the branch's newest workpad write and pin (post-compaction the
+  // branch may no longer carry the pre-compaction write). run BEFORE setting the flags so the
+  // force/compaction markers below win over reconstruct's resets.
+  pi.on("session_compact", async (_event, ctx) => {
+    reconstruct(ctx);
     forceNextAppend = true;
     isPostCompaction = true;
   });
@@ -685,8 +689,10 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     description: "Read the current session-local workpad snapshot. Read-only: performs no writes. Call it to re-orient when the auto-injected workpad block is not present or you need to confirm current state. Returns the same five fields as a write would store.",
     promptGuidelines: [],
     parameters: WorkpadGetParameters,
-    async execute(_toolCallId, _params) {
-      return { content: [{ type: "text", text: formatWorkpad(snapshot, userDirective) }], details: {} as Record<string, never> };
+    // Read the branch (same source as history), not the in-memory closure, so get never
+    // returns content the branch no longer carries after a tree handoff or compaction.
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      return { content: [{ type: "text", text: formatWorkpad(reconstructSnapshot(ctx), reconstructUserDirective(ctx)) }], details: {} as Record<string, never> };
     },
     renderResult(result, _options, _theme, _context) {
       const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");

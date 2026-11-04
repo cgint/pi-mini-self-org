@@ -100,15 +100,17 @@ describe("miniSelfOrg", () => {
     expect(get.label).toBe("Mini self-org workpad (read)");
     expect(get.promptGuidelines).toEqual([]);
     expect(TypeCompiler.Compile(WorkpadGetParameters).Check({})).toBe(true);
-    expect((await get.execute("id", {})).content[0].text).toBe(formatWorkpad(emptySnapshot()));
+    expect((await get.execute("id", {}, undefined, undefined, context())).content[0].text).toBe(formatWorkpad(emptySnapshot()));
   });
 
   it("workpad-get execute returns formatted snapshot and does not mutate state", async () => {
     const { handlers, tool, tools } = setupWithInjection("scheduled:2");
     const get = tools.get(WORKPAD_GET_TOOL_NAME);
     const written = await tool.execute("id", valid);
-    const before = await get.execute("id", {});
-    const after = await get.execute("id", {});
+    // The harness persists each set's details.snapshot to the branch; get now reads that branch.
+    const getBranch = context([workpadEntry(TOOL_NAME, valid)]);
+    const before = await get.execute("id", {}, undefined, undefined, getBranch);
+    const after = await get.execute("id", {}, undefined, undefined, getBranch);
 
     expect(before.content[0].text).toBe(formatWorkpad(written.details.snapshot));
     expect(after.content[0].text).toBe(before.content[0].text);
@@ -121,6 +123,29 @@ describe("miniSelfOrg", () => {
     const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
     expect((await contextHandler({ messages: [stale] }, context())).messages).toEqual([]);
     expect((await contextHandler({ messages: [] }, context())).messages).toEqual([]);
+  });
+
+  it("workpad-get reads the branch's newest write, not the stale in-memory closure (divergence closed)", async () => {
+    const { tool, tools } = setupWithInjection("scheduled:2");
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    // The closure holds a stale pre-compaction write; the branch carries a different, newer write.
+    await tool.execute("id", { overallGoal: "Stale goal", currentFocus: "stale", nextActions: [], blockers: [], notes: [] });
+    const branch = context([workpadEntry(TOOL_NAME, valid)]); // branch has "Ship"
+    const text = (await get.execute("id", {}, undefined, undefined, branch)).content[0].text as string;
+    expect(text).toContain("Overall goal: Ship"); // branch value
+    expect(text).not.toContain("Stale goal"); // stale closure must not leak
+  });
+
+  it("session_compact resyncs the closure from the branch so /mini-self-org shows post-compaction state (divergence closed)", async () => {
+    const { handlers, commands, tool } = setupWithInjection("never");
+    await tool.execute("id", { overallGoal: "Pre-compact", currentFocus: "pc", nextActions: [], blockers: [], notes: [] });
+    const branch = context([workpadEntry(TOOL_NAME, valid)]); // post-compaction branch has "Ship"
+    await handlers.get("session_compact")?.({}, branch);
+    const notify = vi.fn();
+    await commands.get("mini-self-org").handler("", { ui: { notify }, sessionManager: { getBranch: () => branch.sessionManager.getBranch() } });
+    const shown = notify.mock.calls[0][0] as string;
+    expect(shown).toContain("Overall goal: Ship"); // resynced closure = branch state
+    expect(shown).not.toContain("Pre-compact"); // stale closure must not leak
   });
 
   it("describes every workpad field as high-level durable steering rather than transient status", () => {
@@ -525,7 +550,7 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // workpad-get still returns the current snapshot in never mode (no injection needed):
-    const read = await get.execute("id", {});
+    const read = await get.execute("id", {}, undefined, undefined, branch);
     expect(read.isError).toBeUndefined();
     expect(read.content[0].text).toContain("Overall goal: Ship");
   });
@@ -778,8 +803,11 @@ describe("miniSelfOrg", () => {
     expect(turnEnd).toBeDefined();
     await tool.execute("id", valid);
 
+    // Compaction does not prune the branch (pi retains pre-compaction entries), so reconstruct
+    // resyncs the closure to the branch's set write. Model that write-bearing branch here.
+    const writeBranch = context([workpadEntry(TOOL_NAME, valid)]);
     // Forced append: the very next completed turn_end appends even though counter 1 < 3.
-    await handlers.get("session_compact")?.({}, context());
+    await handlers.get("session_compact")?.({}, writeBranch);
     const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(r1.entries).toHaveLength(1);
     const entry = r1.entries[0];
@@ -1003,8 +1031,9 @@ describe("miniSelfOrg", () => {
       // (scheduled:5 → turn 1: turnsSinceLastAppend=1 <5, boundary not armed, no force → no sheet → no notify.)
       expect(quiet).not.toHaveBeenCalled();
 
-      // Now compact → forceNextAppend. The very next completed turn emits a forced sheet.
-      await compact({}, context());
+      // Now compact → forceNextAppend. The branch retains the set write (pi does not prune it on
+      // compaction), so reconstruct resyncs the closure and the forced turn emits a real sheet.
+      await compact({}, context([workpadEntry(TOOL_NAME, valid)]));
       const forced = vi.fn();
       const rForced = await turnEnd({ type: "turn_end", turnIndex: 2, outcome: "completed" }, uiCtx(forced));
       expect(rForced.entries).toHaveLength(1); // forced sheet injected
@@ -1151,7 +1180,8 @@ describe("miniSelfOrg", () => {
     await tool.execute("id", valid);
 
     // Compaction arms forceNextAppend (unified flag, both persistent modes) — no before_agent_start needed.
-    await handlers.get("session_compact")?.({}, context());
+    // The branch retains the set write across compaction, so reconstruct resyncs the closure.
+    await handlers.get("session_compact")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
     const r1 = await turnEnd?.({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(r1.entries).toHaveLength(1);
     // The force is consumed: the following completed turn does NOT append (no boundary re-armed).
@@ -1366,7 +1396,8 @@ describe("miniSelfOrg", () => {
     // Non-empty pad: force → state sheet.
     const a = setupWithInjection("user-boundary+scheduled:5");
     await a.tool.execute("id", valid);
-    await a.handlers.get("session_compact")?.({}, context());
+    // Branch retains the set write across compaction → reconstruct resyncs the closure to it.
+    await a.handlers.get("session_compact")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
     const rA = await a.handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(rA.entries).toHaveLength(1);
     expect(rA.entries[0].content).not.toContain("the workpad is empty");
@@ -1508,7 +1539,7 @@ describe("miniSelfOrg", () => {
     const get = tools.get(WORKPAD_GET_TOOL_NAME);
     const branch = context([pinEntry("Never touch legacy DB tables")]);
     await handlers.get("session_start")?.({}, branch);
-    const result = await get.execute("id", {});
+    const result = await get.execute("id", {}, undefined, undefined, branch);
     const text = result.content[0].text as string;
     expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
     expect(text).toContain("Never touch legacy DB tables");
@@ -1519,16 +1550,17 @@ describe("miniSelfOrg", () => {
   it("pinned directive survives agent self-org-workpad-set overwrite and full clear", async () => {
     const { handlers, tool, tools } = setup();
     const get = tools.get(WORKPAD_GET_TOOL_NAME);
-    const branch = context([pinEntry("Keep guardrails on")]);
+    // Pin persisted plus the set the agent already made (the harness persists set details.snapshot).
+    const branch = context([pinEntry("Keep guardrails on"), workpadEntry(TOOL_NAME, valid)]);
     await handlers.get("session_start")?.({}, branch);
     // Agent overwrites the snapshot with new content.
     await tool.execute("id", valid);
-    let text = (await get.execute("id", {})).content[0].text as string;
+    let text = (await get.execute("id", {}, undefined, undefined, branch)).content[0].text as string;
     expect(text).toContain("Keep guardrails on");
     expect(text).toContain("Overall goal: Ship");
     // Agent fully clears the snapshot — directive remains.
     await tool.execute("id", emptySnapshot());
-    text = (await get.execute("id", {})).content[0].text as string;
+    text = (await get.execute("id", {}, undefined, undefined, branch)).content[0].text as string;
     expect(text).toContain("USER STANDING GUARDRAIL (Human-owned, non-negotiable):");
     expect(text).toContain("Keep guardrails on");
   });
@@ -1794,7 +1826,8 @@ describe("miniSelfOrg", () => {
     const turnEnd = handlers.get("turn_end")!;
     await tool.execute("id", valid);
 
-    await handlers.get("session_compact")?.({}, context());
+    // Branch retains the set write across compaction → reconstruct resyncs the closure to it.
+    await handlers.get("session_compact")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
     const forced = await turnEnd({ type: "turn_end", turnIndex: 1, outcome: "completed" }, context());
     expect(forced.entries).toHaveLength(1);
     expect(forced.entries[0].content).toContain("history checkpoint (turn 1, post-compaction)");
