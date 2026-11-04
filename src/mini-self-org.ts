@@ -23,7 +23,7 @@ const RECALL_GUIDANCE = "The self-org-workpad-set block injected at the end of t
 const HISTORY_USAGE_GUIDANCE = `Call self-org-workpad-history to re-orient after context compaction, after long interruptions, before clearing the workpad, or before starting a new work thread. It is read-only and non-authoritative: it shows this branch's overall-goal and focus history (past workpad snapshots) and never replaces a self-org-workpad-set update.`;
 const STALE_STATE_GUIDANCE = `When your overall goal, current focus, plan, or blockers materially change, call self-org-workpad-set to replace the complete snapshot before the next consequential tool/action batch — not after every tool result. ${TOOL_NAME_GUIDANCE} Do not merely state that it is stale; replace it. Do not update ritualistically after every tool; use meaningful state boundaries.`;
 
-type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "never" } | { mode: "scheduled"; interval: number };
+type InjectionPolicy = { mode: "always" } | { mode: "user-boundary" } | { mode: "never" } | { mode: "scheduled"; interval: number } | { mode: "combined"; interval: number };
 
 function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): InjectionPolicy {
   if (value === "always") return { mode: "always" };
@@ -34,7 +34,15 @@ function parseInjectionPolicy(value = process.env.MINI_SELF_ORG_INJECTION): Inje
     const interval = Number(match[1]);
     if (Number.isSafeInteger(interval)) return { mode: "scheduled", interval };
   }
-  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, never, or scheduled:<positive safe integer>");
+  // "user-boundary+scheduled:<N>" is the composite form: user-boundary trigger
+  // AND scheduled window tick, coalesced to at most one sheet per context event.
+  const compositeMatch =
+    /^user-boundary\+scheduled:([1-9]\d*)$|^scheduled:([1-9]\d*)\+user-boundary$/.exec(value);
+  if (compositeMatch) {
+    const interval = Number(compositeMatch[1] ?? compositeMatch[2]);
+    if (Number.isSafeInteger(interval)) return { mode: "combined", interval };
+  }
+  throw new Error("MINI_SELF_ORG_INJECTION must be always, user-boundary, never, scheduled:<positive safe integer>, or user-boundary+scheduled:<positive safe integer>");
 }
 
 export interface WorkpadSnapshot {
@@ -380,7 +388,7 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     const snapshotHasContent = hasContent(branchSnapshot);
     const recovery = forceNextInjection && snapshotHasContent;
     callsSinceLastInjectionOrWrite += 1;
-    const scheduled = injectionPolicy.mode === "scheduled" && callsSinceLastInjectionOrWrite >= injectionPolicy.interval;
+    const scheduled = (injectionPolicy.mode === "scheduled" || injectionPolicy.mode === "combined") && callsSinceLastInjectionOrWrite >= injectionPolicy.interval;
     const shouldInject = injectionPolicy.mode !== "never" && snapshotHasContent && (injectionPolicy.mode === "always" || userBoundary || recovery || scheduled);
     if (shouldInject) {
       if (recovery) forceNextInjection = false;

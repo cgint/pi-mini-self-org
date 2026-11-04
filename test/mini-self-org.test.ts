@@ -605,4 +605,49 @@ describe("miniSelfOrg", () => {
     expect(got).toBe(formatWorkpad(emptySnapshot()));
   });
 
+
+  it("accepts the combined injection policy user-boundary+scheduled:N", () => {
+    expect(() => setupWithInjection("user-boundary+scheduled:10")).not.toThrow();
+    expect(() => setupWithInjection("scheduled:10+user-boundary")).not.toThrow();
+    expect(() => setupWithInjection("user-boundary+scheduled:0")).toThrow(/MINI_SELF_ORG_INJECTION/);
+    expect(() => setupWithInjection("user-boundary+scheduled:-1")).toThrow(/MINI_SELF_ORG_INJECTION/);
+    expect(() => setupWithInjection("user-boundary+scheduled:1.5")).toThrow(/MINI_SELF_ORG_INJECTION/);
+    expect(() => setupWithInjection("user-boundary+always")).toThrow(/MINI_SELF_ORG_INJECTION/);
+  });
+
+  it("combined policy: scheduled appends occur and read the branch", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:2");
+    const contextHandler = handlers.get("context")!;
+    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, branch);
+    // First context event: recovery injection (forceNextInjection from session_start).
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    // Second: no injection (counter reset by recovery, scheduled not yet due).
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    // Third: scheduled window due (2 calls since last injection).
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+  });
+
+  it("combined policy: user-boundary injects on the first context event after each user submission", async () => {
+    const { handlers, tool } = setupWithInjection("user-boundary+scheduled:10");
+    const contextHandler = handlers.get("context")!;
+    const branch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, branch);
+    // Recovery injection from session_start.
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    // No boundary armed: no injection.
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+    // User submission arms the boundary.
+    await handlers.get("before_agent_start")?.({}, context());
+    // First context event after the boundary: injection.
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(1);
+    // Boundary consumed: no injection.
+    expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
+  });
+
+  it("constructs cleanly under the live combined env value", () => {
+    // The exact value that broke the user's run: MINI_SELF_ORG_INJECTION=user-boundary+scheduled:10
+    expect(() => setupWithInjection("user-boundary+scheduled:10")).not.toThrow();
+  });
+
 });
