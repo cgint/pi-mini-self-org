@@ -95,15 +95,15 @@ describe("miniSelfOrg", () => {
     expect(get.label).toBe("Mini self-org workpad (read)");
     expect(get.promptGuidelines).toEqual([]);
     expect(TypeCompiler.Compile(WorkpadGetParameters).Check({})).toBe(true);
-    expect((await get.execute("id", {})).content[0].text).toBe(formatWorkpad(emptySnapshot()));
+    expect((await get.execute("id", {}, undefined, undefined, context())).content[0].text).toBe(formatWorkpad(emptySnapshot()));
   });
 
   it("workpad-get execute returns formatted snapshot and does not mutate state", async () => {
     const { handlers, tool, tools } = setupWithInjection("scheduled:2");
     const get = tools.get(WORKPAD_GET_TOOL_NAME);
     const written = await tool.execute("id", valid);
-    const before = await get.execute("id", {});
-    const after = await get.execute("id", {});
+    const before = await get.execute("id", {}, undefined, undefined, context([workpadEntry(TOOL_NAME, valid)]));
+    const after = await get.execute("id", {}, undefined, undefined, context([workpadEntry(TOOL_NAME, valid)]));
 
     expect(before.content[0].text).toBe(formatWorkpad(written.details.snapshot));
     expect(after.content[0].text).toBe(before.content[0].text);
@@ -111,8 +111,9 @@ describe("miniSelfOrg", () => {
     expect(get.renderResult(before, {}, {}, {}).render(80)).toEqual(before.content[0].text.split("\n"));
 
     const contextHandler = handlers.get("context")!;
+    const branchWithWrite = context([workpadEntry(TOOL_NAME, valid)]);
     expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(0);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
+    expect((await contextHandler({ messages: [] }, branchWithWrite)).messages).toHaveLength(1);
   });
 
   it("describes every workpad field as high-level durable steering rather than transient status", () => {
@@ -265,8 +266,9 @@ describe("miniSelfOrg", () => {
     const user = { role: "user", content: "keep", timestamp: 1 };
     expect(await contextHandler?.({ messages: [user, existing] }, context())).toEqual({ messages: [user] });
 
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    const result = (await contextHandler?.({ messages: [user, existing] }, context())) as { messages: any[] };
+    const alwaysBranch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, alwaysBranch);
+    const result = (await contextHandler?.({ messages: [user, existing] }, alwaysBranch)) as { messages: any[] };
     expect(result.messages).toHaveLength(2);
     expect(result.messages[1]).toMatchObject({
       role: "custom",
@@ -282,10 +284,11 @@ describe("miniSelfOrg", () => {
     // Cache-relevant invariant: pi serializes only content, never the message timestamp, so an
     // unchanged snapshot must not introduce divergence at the tail between requests.
     const { handlers } = setupWithInjection("always");
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    const byteBranch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, byteBranch);
     const contextHandler = handlers.get("context");
-    const first = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
-    const second = (await contextHandler?.({ messages: [] }, context())) as { messages: any[] };
+    const first = (await contextHandler?.({ messages: [] }, byteBranch)) as { messages: any[] };
+    const second = (await contextHandler?.({ messages: [] }, byteBranch)) as { messages: any[] };
     expect(first.messages[0].content).toBe(second.messages[0].content);
   });
 
@@ -341,7 +344,8 @@ describe("miniSelfOrg", () => {
   it("retains an overall goal when only the current focus is cleared, and clears every field for a full clear", async () => {
     const { tool, handlers } = setupWithInjection("always");
     const focusCleared = await tool.execute("id", { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
-    const injected = await handlers.get("context")?.({ messages: [] }, context());
+    const focusBranch = context([workpadEntry(TOOL_NAME, { overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] })]);
+    const injected = await handlers.get("context")?.({ messages: [] }, focusBranch);
 
     expect(focusCleared.content[0].text).toBe("Mini self-org workpad updated.");
     expect(focusCleared.details.snapshot).toEqual({ overallGoal: "Ship", currentFocus: null, nextActions: [], blockers: [], notes: [] });
@@ -405,11 +409,12 @@ describe("miniSelfOrg", () => {
     const contextHandler = handlers.get("context")!;
     const user = { role: "user", content: "keep", timestamp: 1 };
     const stale = { role: "custom", customType: WORKPAD_CUSTOM_TYPE, content: "old", display: false, timestamp: 1 };
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
-    expect(await contextHandler({ messages: [user, stale] }, context())).toEqual({ messages: [user] });
+    const ubBranch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, ubBranch);
+    expect((await contextHandler({ messages: [user] }, ubBranch)).messages).toHaveLength(2);
+    expect(await contextHandler({ messages: [user, stale] }, ubBranch)).toEqual({ messages: [user] });
     await handlers.get("before_agent_start")?.({}, context());
-    expect((await contextHandler({ messages: [user] }, context())).messages).toHaveLength(2);
+    expect((await contextHandler({ messages: [user] }, ubBranch)).messages).toHaveLength(2);
 
     const empty = setupWithInjection("user-boundary");
     await empty.handlers.get("before_agent_start")?.({}, context());
@@ -421,7 +426,8 @@ describe("miniSelfOrg", () => {
     await recoveredEmpty.handlers.get("session_start")?.({}, context());
     await recoveredEmpty.handlers.get("context")!({ messages: [] }, context());
     await recoveredEmpty.tool.execute("id", valid);
-    expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, context())).messages).toHaveLength(1);
+    const recoveredBranch = context([workpadEntry(TOOL_NAME, valid)]);
+    expect((await recoveredEmpty.handlers.get("context")!({ messages: [] }, recoveredBranch)).messages).toHaveLength(1);
   });
 
   it("never mode: suppresses all injection but still strips stale blocks", async () => {
@@ -461,7 +467,7 @@ describe("miniSelfOrg", () => {
     expect((await contextHandler({ messages: [] }, branch)).messages).toHaveLength(0);
 
     // workpad-get still returns the current snapshot in never mode (no injection needed):
-    const read = await get.execute("id", {});
+    const read = await get.execute("id", {}, undefined, undefined, branch);
     expect(read.isError).toBeUndefined();
     expect(read.content[0].text).toContain("Overall goal: Ship");
   });
@@ -497,10 +503,11 @@ describe("miniSelfOrg", () => {
 
   it("makes scheduled:1 equivalent to always for non-empty state", async () => {
     const { handlers } = setupWithInjection("scheduled:1");
-    await handlers.get("session_start")?.({}, context([workpadEntry(TOOL_NAME, valid)]));
+    const s1Branch = context([workpadEntry(TOOL_NAME, valid)]);
+    await handlers.get("session_start")?.({}, s1Branch);
     const contextHandler = handlers.get("context")!;
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
-    expect((await contextHandler({ messages: [] }, context())).messages).toHaveLength(1);
+    expect((await contextHandler({ messages: [] }, s1Branch)).messages).toHaveLength(1);
+    expect((await contextHandler({ messages: [] }, s1Branch)).messages).toHaveLength(1);
   });
 
   it("notifies the focused branch history from the /mini-self-org-history command", async () => {
@@ -511,6 +518,91 @@ describe("miniSelfOrg", () => {
     expect(notify.mock.calls[0][0]).toContain("Command goal");
     expect(notify.mock.calls[0][0]).toContain("non-authoritative");
     expect(notify.mock.calls[0][1]).toBe("info");
+  });
+
+
+  it("injection reads the branch's newest workpad write, not the stale closure", async () => {
+    // Prove the core fix: after a tree switch or compaction, the injected sheet
+    // equals the branch's newest workpad write, even when the closure holds a
+    // different (stale) value.
+    const { handlers, tool } = setupWithInjection("always");
+    const contextHandler = handlers.get("context")!;
+    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
+    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
+
+    // Write foreign content to the closure.
+    await tool.execute("id", foreign);
+    // The branch now has the foreign write (simulated by passing it as the branch).
+    const foreignBranch = context([workpadEntry(TOOL_NAME, foreign)]);
+    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
+
+    // Simulate a tree switch: the closure still holds foreign, but the branch
+    // now carries mine. The injection must read the branch, not the closure.
+    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
+    expect(injected.messages).toHaveLength(1);
+    expect(injected.messages[0].content).toContain("My thread");
+    expect(injected.messages[0].content).not.toContain("Foreign thread");
+
+    // The closure still holds foreign (the set tool wrote it), but the injection
+    // read the branch. This is the proven divergence, now closed.
+    expect((await contextHandler({ messages: [] }, foreignBranch)).messages[0].content).toContain("Foreign thread");
+  });
+
+  it("get and history agree with the injected sheet after a tree switch", async () => {
+    const { handlers, tool, tools } = setupWithInjection("always");
+    const contextHandler = handlers.get("context")!;
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const history = tools.get(HISTORY_TOOL_NAME);
+    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
+    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
+    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
+
+    await tool.execute("id", foreign);
+    // After a tree switch, the branch carries mine, not foreign.
+    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
+    const got = (await get.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
+    const hist = (await history.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
+
+    // All three sources agree on the branch's content.
+    expect(injected.messages[0].content).toContain("My thread");
+    expect(got).toContain("My thread");
+    expect(hist).toContain("My thread");
+    expect(injected.messages[0].content).not.toContain("Foreign thread");
+    expect(got).not.toContain("Foreign thread");
+  });
+
+  it("session_compact resyncs the closure from the branch", async () => {
+    const { handlers, tool, tools } = setupWithInjection("always");
+    const contextHandler = handlers.get("context")!;
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const foreign = { overallGoal: "Foreign thread", currentFocus: "Foreign focus", nextActions: ["foreign"], blockers: [], notes: [] };
+    const mine = { overallGoal: "My thread", currentFocus: "My focus", nextActions: ["mine"], blockers: [], notes: [] };
+    const mineBranch = context([workpadEntry(TOOL_NAME, mine)]);
+
+    await tool.execute("id", foreign);
+    // Compaction resyncs the closure from the branch.
+    await handlers.get("session_compact")?.({}, mineBranch);
+    const injected = (await contextHandler({ messages: [] }, mineBranch)) as { messages: any[] };
+    const got = (await get.execute("id", {}, undefined, undefined, mineBranch)).content[0].text;
+
+    // Both read the branch's content, not the stale closure.
+    expect(injected.messages[0].content).toContain("My thread");
+    expect(got).toContain("My thread");
+  });
+
+  it("empty workpad still injects the nudge and get returns the empty state", async () => {
+    const { handlers, tool, tools } = setupWithInjection("always");
+    const contextHandler = handlers.get("context")!;
+    const get = tools.get(WORKPAD_GET_TOOL_NAME);
+    const emptyBranch = context([]);
+
+    await tool.execute("id", emptySnapshot());
+    const injected = (await contextHandler({ messages: [] }, emptyBranch)) as { messages: any[] };
+    const got = (await get.execute("id", {}, undefined, undefined, emptyBranch)).content[0].text;
+
+    // Empty workpad: no injection (hasContent is false), get returns the empty state.
+    expect(injected.messages).toHaveLength(0);
+    expect(got).toBe(formatWorkpad(emptySnapshot()));
   });
 
 });

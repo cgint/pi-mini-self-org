@@ -295,8 +295,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async () => {
     pendingUserBoundary = true;
   });
-  pi.on("session_compact", async () => {
-    forceNextInjection = true;
+  pi.on("session_compact", async (_event, ctx) => {
+    reconstruct(ctx);
   });
 
   pi.registerTool<typeof WorkpadParameters, WorkpadDetails>({
@@ -330,8 +330,8 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     description: "Read the current session-local workpad snapshot. Read-only: performs no writes. Call it to re-orient when the auto-injected workpad block is not present or you need to confirm current state. Returns the same five fields as a write would store.",
     promptGuidelines: [],
     parameters: WorkpadGetParameters,
-    async execute(_toolCallId, _params) {
-      return { content: [{ type: "text", text: formatWorkpad(snapshot) }], details: {} as Record<string, never> };
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      return { content: [{ type: "text", text: formatWorkpad(reconstructSnapshot(ctx)) }], details: {} as Record<string, never> };
     },
     renderResult(result, _options, _theme, _context) {
       const text = (result.content ?? []).map((content) => (content.type === "text" ? content.text ?? "" : "")).join("\n");
@@ -367,23 +367,27 @@ export default function miniSelfOrg(pi: ExtensionAPI): void {
     },
   });
   // Before each LLM call, remove stale transient blocks and conditionally inject the current one.
-  pi.on("context", async (event) => {
+  // The injected sheet is read from the branch's newest workpad write (the same source
+  // history and get use), not the in-memory closure, so a stale closure after compaction
+  // or a tree handoff can never inject content the branch does not carry.
+  pi.on("context", async (event, ctx) => {
+    const branchSnapshot = reconstructSnapshot(ctx);
     const messages = event.messages.filter(
       (message) => message.role !== "custom" || message.customType !== WORKPAD_CUSTOM_TYPE,
     );
     const userBoundary = pendingUserBoundary;
     pendingUserBoundary = false;
-    const snapshotHasContent = hasContent(snapshot);
+    const snapshotHasContent = hasContent(branchSnapshot);
     const recovery = forceNextInjection && snapshotHasContent;
-    if (snapshotHasContent) forceNextInjection = false;
     callsSinceLastInjectionOrWrite += 1;
     const scheduled = injectionPolicy.mode === "scheduled" && callsSinceLastInjectionOrWrite >= injectionPolicy.interval;
     const shouldInject = injectionPolicy.mode !== "never" && snapshotHasContent && (injectionPolicy.mode === "always" || userBoundary || recovery || scheduled);
     if (shouldInject) {
+      if (recovery) forceNextInjection = false;
       messages.push({
         role: "custom",
         customType: WORKPAD_CUSTOM_TYPE,
-        content: contextMessage(snapshot),
+        content: contextMessage(branchSnapshot),
         display: false,
         timestamp: Date.now(),
       });
