@@ -1,5 +1,7 @@
 node_modules/
 .pi/
+!.pi/skills/
+!.pi/skills/**
 .env
 .env.*
 .DS_Store

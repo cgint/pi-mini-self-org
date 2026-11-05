@@ -150,6 +150,16 @@ Interactive test: `pi -e ./index.ts`
 - **No AGENTS.md existed before this bootstrap** — earlier sessions had no
   pairing memory anchor.
 
+## Maintenance
+
+Dependency-upgrade and audit campaigns follow `.pi/skills/repo-maintenance/SKILL.md`
+(the self-sufficient, repo-internal maintenance routine). Gate any push with
+`npm run precommit` (typecheck + `npm test` + `npm audit --audit-level=moderate`).
+Existing `overrides` in package.json are transitional audit pins — re-check them
+during a campaign and remove them once the fixed package version is released.
+Never add maintainer-facing material to the `pi.extensions` manifest or root
+`skills/` channel; those belong to extension users.
+
 ## Boundaries
 
 - Do not store secrets or credentials in pairing memory.
